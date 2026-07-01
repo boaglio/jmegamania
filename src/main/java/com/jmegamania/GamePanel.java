@@ -1,5 +1,8 @@
 package com.jmegamania;
 
+import com.jmegamania.entities.Bullet;
+import com.jmegamania.entities.Enemy;
+import com.jmegamania.entities.EnemyFormation;
 import com.jmegamania.entities.Player;
 
 import javax.swing.JPanel;
@@ -10,6 +13,9 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 
 public class GamePanel extends JPanel implements Runnable {
 
@@ -18,8 +24,12 @@ public class GamePanel extends JPanel implements Runnable {
     public static final int SCALE = 2;
     private static final int TARGET_FPS = 60;
     private static final long NANOS_PER_FRAME = 1_000_000_000L / TARGET_FPS;
+    private static final int SHOOT_COOLDOWN_FRAMES = 12;
 
-    private final Player player = new Player(WIDTH / 2, HEIGHT - 20);
+    private final Player player = new Player(WIDTH / 2, HEIGHT - Player.HEIGHT - 12);
+    private final List<Bullet> bullets = new ArrayList<>();
+    private final EnemyFormation enemyFormation = new EnemyFormation(40, 20);
+    private int shootCooldown;
     private Thread gameThread;
     private volatile boolean running;
 
@@ -78,6 +88,33 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void update() {
         player.update(WIDTH);
+        enemyFormation.update(WIDTH);
+
+        if (shootCooldown > 0) {
+            shootCooldown--;
+        }
+        if (player.isShooting() && shootCooldown == 0) {
+            bullets.add(new Bullet(player.getMuzzleX(), player.getMuzzleY()));
+            shootCooldown = SHOOT_COOLDOWN_FRAMES;
+        }
+
+        Iterator<Bullet> it = bullets.iterator();
+        while (it.hasNext()) {
+            Bullet bullet = it.next();
+            bullet.update(player.getMuzzleX());
+            if (bullet.isOffScreen()) {
+                it.remove();
+                continue;
+            }
+
+            for (Enemy enemy : enemyFormation.getEnemies()) {
+                if (bullet.getBounds().intersects(enemy.getBounds())) {
+                    enemyFormation.remove(enemy);
+                    it.remove();
+                    break;
+                }
+            }
+        }
     }
 
     @Override
@@ -88,6 +125,10 @@ public class GamePanel extends JPanel implements Runnable {
         g2.scale(SCALE, SCALE);
 
         player.render(g2);
+        for (Bullet bullet : bullets) {
+            bullet.render(g2);
+        }
+        enemyFormation.render(g2);
 
         g2.dispose();
     }
