@@ -7,12 +7,16 @@ import java.awt.Rectangle;
 public class Bullet {
 
     private static final int WIDTH = 2;
-    private static final int HEIGHT = 10;
-    private static final int SPEED = 4;
+    private static final int HEIGHT = Enemy.HEIGHT;
+    private static final int SPEED = 2;
 
     private int x;
     private int y;
 
+    /**
+     * y is the trailing (bottom) edge of the shot, anchored at the ship's nose on spawn;
+     * the beam is drawn extending upward from this point so it appears above the ship, not through it.
+     */
     public Bullet(int x, int y) {
         this.x = x;
         this.y = y;
@@ -24,15 +28,15 @@ public class Bullet {
     }
 
     public boolean isOffScreen() {
-        return y + HEIGHT < 0;
+        return y < 0;
     }
 
     public Rectangle getBounds() {
-        return new Rectangle(x, y, WIDTH, HEIGHT);
+        return new Rectangle(x, y - HEIGHT, WIDTH, HEIGHT);
     }
 
     public void render(Graphics2D g) {
-        g.setColor(Color.WHITE);
-        g.fillRect(x, y, WIDTH, HEIGHT);
+        g.setColor(Color.RED);
+        g.fillRect(x, y - HEIGHT, WIDTH, HEIGHT);
     }
 }

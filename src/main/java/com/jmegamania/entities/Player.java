@@ -1,14 +1,19 @@
 package com.jmegamania.entities;
 
-import java.awt.Color;
+import com.jmegamania.engine.Sprites;
+
 import java.awt.Graphics2D;
+import java.awt.Rectangle;
 import java.awt.event.KeyEvent;
+import java.awt.image.BufferedImage;
 
 public class Player {
 
     public static final int WIDTH = 16;
-    public static final int HEIGHT = 22;
+    public static final int HEIGHT = 23;
     private static final int SPEED = 2;
+    private static final int HORIZONTAL_MARGIN = 5;
+    private static final BufferedImage SPRITE = Sprites.load("player_blue.png");
 
     private int x;
     private final int y;
@@ -53,6 +58,14 @@ public class Player {
         return y;
     }
 
+    public Rectangle getBounds() {
+        return new Rectangle(x, y, WIDTH, HEIGHT);
+    }
+
+    public void resetPosition(int startX) {
+        this.x = startX;
+    }
+
     public void update(int boardWidth) {
         if (movingLeft) {
             x -= SPEED;
@@ -60,11 +73,10 @@ public class Player {
         if (movingRight) {
             x += SPEED;
         }
-        x = Math.max(0, Math.min(boardWidth - WIDTH, x));
+        x = Math.max(HORIZONTAL_MARGIN, Math.min(boardWidth - HORIZONTAL_MARGIN - WIDTH, x));
     }
 
     public void render(Graphics2D g) {
-        g.setColor(Color.GREEN);
-        g.fillRect(x, y, WIDTH, HEIGHT);
+        g.drawImage(SPRITE, x, y, WIDTH, HEIGHT, null);
     }
 }
