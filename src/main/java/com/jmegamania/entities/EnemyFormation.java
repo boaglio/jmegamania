@@ -10,13 +10,17 @@ import java.util.Random;
 public class EnemyFormation {
 
     private static final int ROWS = 2;
-    private static final int COLS = 9;
+    // COLS * H_SPACING spans the full 320px playfield so a row tiles it with no gap.
+    private static final int COLS = 10;
     private static final int H_SPACING = 32;
     private static final int V_SPACING = 30;
     private static final int STAGGER_OFFSET = H_SPACING / 2;
+    // Horizontal wrap distance: enemies loop seamlessly every COLS columns.
+    private static final int LOOP_WIDTH = COLS * H_SPACING;
     private static final double SPEED_X = 1.6;
     private static final int SHOT_INTERVAL_FRAMES = 150;
-    private static final int PUSH_OFF_SCREEN_MULTIPLIER = 3;
+    // Blank space (px) kept to the left of the screen before the first enemy scrolls in.
+    private static final int ENTRY_GAP = 40;
 
     private final List<Enemy> enemies = new ArrayList<>();
     private final List<EnemyShot> shots = new ArrayList<>();
@@ -42,17 +46,28 @@ public class EnemyFormation {
 
     public void pushOffScreen(int boardWidth) {
         shots.clear();
-        int shift = -boardWidth * PUSH_OFF_SCREEN_MULTIPLIER;
+        if (enemies.isEmpty()) {
+            return;
+        }
+        int rightmost = enemies.get(0).getX();
+        for (Enemy enemy : enemies) {
+            rightmost = Math.max(rightmost, enemy.getX());
+        }
+        // Move the whole surviving group just off the left edge so it scrolls back in gradually.
+        int shift = -(rightmost + Enemy.WIDTH + ENTRY_GAP);
         for (Enemy enemy : enemies) {
             enemy.moveBy(shift, 0);
         }
     }
 
     private void spawnGrid() {
+        int rightmostColumn = startX + STAGGER_OFFSET + (COLS - 1) * H_SPACING;
+        int entryShift = rightmostColumn + Enemy.WIDTH + ENTRY_GAP;
         for (int row = 0; row < ROWS; row++) {
             int rowOffset = (row % 2 == 1) ? STAGGER_OFFSET : 0;
             for (int col = 0; col < COLS; col++) {
-                enemies.add(new Enemy(startX + rowOffset + col * H_SPACING, startY + row * V_SPACING));
+                enemies.add(new Enemy(startX + rowOffset + col * H_SPACING - entryShift,
+                        startY + row * V_SPACING));
             }
         }
     }
@@ -68,8 +83,8 @@ public class EnemyFormation {
             moveAccumulator -= step;
             for (Enemy enemy : enemies) {
                 enemy.moveBy(step, 0);
-                if (enemy.getX() > boardWidth) {
-                    enemy.moveBy(-Enemy.WIDTH - enemy.getX(), 0);
+                if (enemy.getX() >= boardWidth) {
+                    enemy.moveBy(-LOOP_WIDTH, 0);
                 }
             }
         }
@@ -114,6 +129,11 @@ public class EnemyFormation {
 
     public List<EnemyShot> getShots() {
         return Collections.unmodifiableList(shots);
+    }
+
+    public void clear() {
+        enemies.clear();
+        shots.clear();
     }
 
     public void remove(Enemy enemy) {

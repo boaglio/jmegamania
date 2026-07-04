@@ -1,5 +1,6 @@
 package com.jmegamania;
 
+import com.jmegamania.engine.Sound;
 import com.jmegamania.engine.Sprites;
 import com.jmegamania.entities.Bullet;
 import com.jmegamania.entities.Enemy;
@@ -44,16 +45,29 @@ public class GamePanel extends JPanel implements Runnable {
             LIVES_ICON_HEIGHT * LIVES_ICON.getWidth() / LIVES_ICON.getHeight();
     private static final double TIMER_MAX = 320;
     private static final double TIMER_INCREMENT = 0.08;
-    private static final double TIMER_DRAIN_PER_FRAME = 8;
+    private static final double TIMER_DRAIN_PER_FRAME = 2.5;
+    // Stage-clear bonus: drain the remaining energy into points.
+    private static final double EMPTYING_DRAIN_PER_FRAME = 3;
+    private static final int EMPTYING_SCORE_PER_FRAME = 10;
+    // Level start: refill the energy bar before play begins.
+    private static final double FUELLING_FILL_PER_FRAME = 5;
 
     private final Player player = new Player(PLAYER_START_X, PLAYER_START_Y);
     private final List<Bullet> bullets = new ArrayList<>();
     private final EnemyFormation enemyFormation = new EnemyFormation(15, 12);
+    private final Sound sfxShoot = Sound.load("shipShoot.wav");
+    private final Sound sfxEnemyHit = Sound.load("enemyHit.wav");
+    private final Sound sfxShipHit = Sound.load("shipHit.wav");
+    private final Sound sfxLoad = Sound.load("load.wav");
+    private final Sound sfxEmptying = Sound.load("emptying.wav");
     private int score;
     private int lives = STARTING_LIVES;
     private double timer;
     private boolean resetting;
-    private boolean gameOver;
+    private boolean emptying;
+    private boolean fuelling;
+    private boolean dying;
+    private boolean ended;
     private Thread gameThread;
     private volatile boolean running;
 
@@ -64,10 +78,13 @@ public class GamePanel extends JPanel implements Runnable {
         addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
-                if (gameOver) {
+                if (ended) {
                     if (e.getKeyCode() == KeyEvent.VK_ENTER) {
                         restart();
                     }
+                    return;
+                }
+                if (dying) {
                     return;
                 }
                 player.keyPressed(e.getKeyCode());
@@ -85,10 +102,14 @@ public class GamePanel extends JPanel implements Runnable {
         lives = STARTING_LIVES;
         timer = 0;
         resetting = false;
-        gameOver = false;
+        emptying = false;
+        dying = false;
+        ended = false;
+        sfxEmptying.stop();
         bullets.clear();
         player.resetPosition(PLAYER_START_X);
         enemyFormation.reset();
+        beginFuelling();
     }
 
     public void start() {
@@ -96,6 +117,7 @@ public class GamePanel extends JPanel implements Runnable {
         gameThread = new Thread(this, "game-loop");
         gameThread.start();
         requestFocusInWindow();
+        beginFuelling();
     }
 
     @Override
@@ -128,7 +150,47 @@ public class GamePanel extends JPanel implements Runnable {
     }
 
     private void update() {
-        if (gameOver) {
+        if (ended) {
+            return;
+        }
+
+        if (dying) {
+            player.updateDeath();
+            if (player.isDead()) {
+                dying = false;
+                if (lives <= 0) {
+                    ended = true;
+                    enemyFormation.clear();
+                    bullets.clear();
+                } else {
+                    lives--;
+                    resetting = true;
+                    sfxLoad.play();
+                    enemyFormation.pushOffScreen(WIDTH);
+                    player.resetPosition(PLAYER_START_X);
+                }
+            }
+            return;
+        }
+
+        if (emptying) {
+            timer += EMPTYING_DRAIN_PER_FRAME;
+            score += EMPTYING_SCORE_PER_FRAME;
+            if (timer >= TIMER_MAX) {
+                emptying = false;
+                sfxEmptying.stop();
+                enemyFormation.reset();
+                beginFuelling();
+            }
+            return;
+        }
+
+        if (fuelling) {
+            timer -= FUELLING_FILL_PER_FRAME;
+            if (timer <= 0) {
+                timer = 0;
+                fuelling = false;
+            }
             return;
         }
 
@@ -146,6 +208,7 @@ public class GamePanel extends JPanel implements Runnable {
 
         if (player.isShooting() && bullets.isEmpty()) {
             bullets.add(new Bullet(player.getMuzzleX(), player.getMuzzleY()));
+            sfxShoot.play();
         }
 
         Iterator<Bullet> it = bullets.iterator();
@@ -162,6 +225,7 @@ public class GamePanel extends JPanel implements Runnable {
                     enemyFormation.remove(enemy);
                     it.remove();
                     score += ENEMY_KILL_SCORE;
+                    sfxEnemyHit.play();
                     break;
                 }
             }
@@ -170,33 +234,46 @@ public class GamePanel extends JPanel implements Runnable {
         for (EnemyShot shot : enemyFormation.getShots()) {
             if (shot.getBounds().intersects(player.getBounds())) {
                 enemyFormation.removeShot(shot);
-                timer = TIMER_MAX;
+                hitPlayer();
                 break;
             }
         }
 
         for (Enemy enemy : enemyFormation.getEnemies()) {
             if (enemy.getBounds().intersects(player.getBounds())) {
-                timer = TIMER_MAX;
+                hitPlayer();
                 break;
             }
         }
 
         if (enemyFormation.getEnemies().isEmpty()) {
-            enemyFormation.reset();
+            emptying = true;
+            enemyFormation.clear();
+            bullets.clear();
+            sfxEmptying.loop();
+            return;
         }
 
         timer = Math.min(TIMER_MAX, timer + TIMER_INCREMENT);
         if (timer >= TIMER_MAX) {
-            lives--;
-            if (lives <= 0) {
-                gameOver = true;
-            } else {
-                resetting = true;
-                enemyFormation.pushOffScreen(WIDTH);
-                player.resetPosition(PLAYER_START_X);
-            }
+            dying = true;
+            player.die();
+            bullets.clear();
         }
+    }
+
+    private void hitPlayer() {
+        if (timer < TIMER_MAX) {
+            sfxShipHit.play();
+        }
+        timer = TIMER_MAX;
+    }
+
+    /** Starts a level with an empty bar that fills back up, as at the beginning of the game. */
+    private void beginFuelling() {
+        fuelling = true;
+        timer = TIMER_MAX;
+        sfxLoad.play();
     }
 
     @Override
@@ -213,9 +290,6 @@ public class GamePanel extends JPanel implements Runnable {
         enemyFormation.render(g2);
 
         renderHud(g2);
-        if (gameOver) {
-            renderGameOver(g2);
-        }
 
         g2.dispose();
     }
@@ -254,23 +328,5 @@ public class GamePanel extends JPanel implements Runnable {
         int iconY = textY - LIVES_ICON_HEIGHT + 4;
         g2.drawImage(LIVES_ICON, groupX, iconY, LIVES_ICON_WIDTH, LIVES_ICON_HEIGHT, null);
         g2.drawString(livesText, groupX + LIVES_ICON_WIDTH + 4, textY);
-    }
-
-    private void renderGameOver(Graphics2D g2) {
-        g2.setColor(Color.WHITE);
-
-        Font titleFont = new Font(Font.MONOSPACED, Font.BOLD, 20);
-        g2.setFont(titleFont);
-        drawCentered(g2, "GAME OVER", HEIGHT / 2 - 10);
-
-        Font promptFont = new Font(Font.MONOSPACED, Font.PLAIN, 10);
-        g2.setFont(promptFont);
-        drawCentered(g2, "PRESS ENTER TO RESTART", HEIGHT / 2 + 14);
-    }
-
-    private void drawCentered(Graphics2D g2, String text, int y) {
-        FontMetrics metrics = g2.getFontMetrics();
-        int x = (WIDTH - metrics.stringWidth(text)) / 2;
-        g2.drawString(text, x, y);
     }
 }
