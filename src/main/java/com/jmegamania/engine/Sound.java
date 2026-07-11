@@ -3,7 +3,9 @@ package com.jmegamania.engine;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.Clip;
+import javax.sound.sampled.Line;
 import javax.sound.sampled.LineEvent;
+import javax.sound.sampled.Mixer;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Map;
@@ -20,6 +22,14 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class Sound {
 
     private static final Map<String, Sound> CACHE = new ConcurrentHashMap<>();
+    /**
+     * On Linux, {@link AudioSystem#getClip()} may pick a raw hardware device
+     * (e.g. "plughw:0,0") that bypasses the system sound server, so audio ends up
+     * on an output nobody is listening to. Prefer the ALSA "default" mixer, which
+     * routes through PulseAudio/PipeWire; on Windows/macOS no mixer matches and
+     * the standard default clip is used.
+     */
+    private static final Mixer.Info PREFERRED_MIXER = findDefaultMixer();
 
     private final byte[] data;
     private Clip loopClip;
@@ -83,11 +93,27 @@ public final class Sound {
         }
         try (AudioInputStream stream =
                      AudioSystem.getAudioInputStream(new ByteArrayInputStream(data))) {
-            Clip clip = AudioSystem.getClip();
+            Clip clip = PREFERRED_MIXER != null
+                    ? AudioSystem.getClip(PREFERRED_MIXER)
+                    : AudioSystem.getClip();
             clip.open(stream);
             return clip;
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static Mixer.Info findDefaultMixer() {
+        try {
+            for (Mixer.Info info : AudioSystem.getMixerInfo()) {
+                if (info.getName().toLowerCase().contains("default")
+                        && AudioSystem.getMixer(info).isLineSupported(new Line.Info(Clip.class))) {
+                    return info;
+                }
+            }
+        } catch (Exception e) {
+            // No usable mixer info; fall through to the platform default.
+        }
+        return null;
     }
 }
