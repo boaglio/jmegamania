@@ -28,41 +28,60 @@ public class EnemyFormation {
                            boolean bobOnBounds) {
     }
 
+    // Geometry doubled from the 160px-wide original: 8px sprites -> 16, objects
+    // spaced 32 hardware pixels -> 64, rows moved one hardware pixel per frame -> 2.
+    private static final int ENEMY_W = 16;
+    private static final int ENEMY_H = 10;
+    private static final double SWEEP_SPEED = 2;
+
     private static final WaveDef[] WAVES = {
             // 1. Hamburgers: stream steadily across the screen.
-            new WaveDef("enemy01.png", 20, 18, 10, Pattern.SWEEP, 1.6, 0,
+            new WaveDef("enemy01.png", 20, ENEMY_W, ENEMY_H, Pattern.SWEEP, SWEEP_SPEED, 0,
                     15, 150, 3, 2, false, 0, false, false),
             // 2. Cookies: sweep back and forth, stepping down at each turn.
-            new WaveDef("enemy02.png", 30, 18, 10, Pattern.ZIGZAG, 1.75, 0,
+            new WaveDef("enemy02.png", 30, ENEMY_W, ENEMY_H, Pattern.ZIGZAG, SWEEP_SPEED, 0,
                     18, 100, 2, 1, true, 170, false, false),
-            // 3. Bugs: like hamburgers, slightly smaller and slower.
-            new WaveDef("enemy03.png", 40, 15, 10, Pattern.SWEEP, 1.5, 0,
+            // 3. Bugs: like hamburgers.
+            new WaveDef("enemy03.png", 40, ENEMY_W, ENEMY_H, Pattern.SWEEP, SWEEP_SPEED, 0,
                     15, 150, 3, 2, false, 0, false, false),
             // 4. Radial tires: cookies pattern, but rows alternate direction individually.
-            new WaveDef("enemy04.png", 50, 18, 10, Pattern.ZIGZAG, 1.75, 0,
+            new WaveDef("enemy04.png", 50, ENEMY_W, ENEMY_H, Pattern.ZIGZAG, SWEEP_SPEED, 0,
                     18, 100, 2, 1, true, 170, true, false),
             // 5. Diamonds: sweep across while slowly bobbing up and down.
-            new WaveDef("enemy05.png", 60, 13, 8, Pattern.SWEEP_BOB, 1.5, 0.05,
+            new WaveDef("enemy05.png", 60, ENEMY_W, ENEMY_H, Pattern.SWEEP_BOB, SWEEP_SPEED, 0.05,
                     15, 150, 3, 2, false, 0, false, true),
             // 6. Steam irons: descend in columns with erratic stop-and-go jinks.
-            new WaveDef("enemy06.png", 70, 18, 10, Pattern.STOP_GO, 1.75, 0.6,
+            new WaveDef("enemy06.png", 70, ENEMY_W, ENEMY_H, Pattern.STOP_GO, SWEEP_SPEED, 0.6,
                     18, 100, 2, 1, true, 50, false, false),
             // 7. Bow ties: fast sweep with a pronounced vertical weave.
-            new WaveDef("enemy07.png", 80, 13, 8, Pattern.SWEEP_BOB, 1.4, 0.75,
+            new WaveDef("enemy07.png", 80, ENEMY_W, ENEMY_H, Pattern.SWEEP_BOB, SWEEP_SPEED, 0.75,
                     15, 150, 3, 2, false, 70, false, false),
             // 8. Space dice: rain straight down, reappearing at random columns.
-            new WaveDef("enemy08.png", 90, 18, 15, Pattern.RAIN, 0, 1.5,
+            new WaveDef("enemy08.png", 90, ENEMY_W, 12, Pattern.RAIN, 0, 1.25,
                     18, 0, 0, 0, false, 0, false, false),
     };
 
+    // Horizontal waves: three staggered rows of five, tiling the wrap ring exactly.
+    private static final int SWEEP_ROWS = 3;
+    private static final int SWEEP_PER_ROW = 5;
+    private static final int SWEEP_SPACING = 64;
+    private static final int SWEEP_STAGGER = SWEEP_SPACING / 2;
+    private static final int SWEEP_ROW_PITCH = 18;
+    // Spawn one full ring off the left edge so the wave streams in gradually.
+    private static final int SWEEP_ENTRY_SHIFT = SWEEP_PER_ROW * SWEEP_SPACING + SWEEP_SPACING;
+    // Multiple of the spacing so survivors re-enter on their original ring slots.
+    private static final int SWEEP_RETREAT_SHIFT = SWEEP_PER_ROW * SWEEP_SPACING + 2 * SWEEP_SPACING;
+    // Vertical waves: three columns 64 apart, rows 36 apart (29 scanlines originally).
+    private static final int COLUMN_SPACING = 64;
+    private static final int ROW_PITCH = 36;
     // Vertical waves wrap back to the top after passing the blaster's row.
     private static final int VERTICAL_WRAP_Y = 175;
     private static final int STOP_GO_WRAP_Y = 165;
     // Descending shots may only be fired from the upper part of the playfield.
     private static final int SHOT_MAX_Y = 125;
     private static final int VOLLEY_STAGGER_FRAMES = 18;
-    private static final int ZIGZAG_STEP_NOW = 15;
-    private static final int ZIGZAG_STEP_LATER = 10;
+    private static final int ZIGZAG_STEP_NOW = 22;
+    private static final int ZIGZAG_STEP_LATER = 14;
     private static final int ZIGZAG_STEP_DELAY_FRAMES = 36;
 
     private static final class PendingShot {
@@ -114,38 +133,40 @@ public class EnemyFormation {
 
     private void spawn() {
         switch (def.pattern()) {
-            case SWEEP, SWEEP_BOB -> spawnSweepColumns();
+            case SWEEP, SWEEP_BOB -> spawnSweepRows();
             case ZIGZAG -> spawnZigzagRows();
-            case STOP_GO -> spawnColumns(35, -75, 75);
+            case STOP_GO -> spawnColumns(96, -75);
             case RAIN -> spawnRain();
         }
     }
 
-    /** Staggered triplets that enter from the left edge and sweep right. */
-    private void spawnSweepColumns() {
-        int y = def.pattern() == Pattern.SWEEP_BOB
+    /**
+     * Three uniform rows of five, evenly spaced so they tile the wrap ring exactly,
+     * with alternate rows offset by half a spacing, as in the original.
+     */
+    private void spawnSweepRows() {
+        int baseY = def.pattern() == Pattern.SWEEP_BOB
                 ? (def.bobOnBounds() ? 27 : 22)
-                : 10;
-        // Start well off the left edge so the wave streams in gradually.
-        double x = -250;
-        while (enemies.size() < def.count()) {
-            add(x, y);
-            add(x - 32, y + 18);
-            add(x, y + 35);
-            x -= 65;
+                : 7;
+        for (int row = 0; row < SWEEP_ROWS; row++) {
+            double y = baseY + row * SWEEP_ROW_PITCH;
+            int stagger = (row % 2 == 1) ? SWEEP_STAGGER : 0;
+            for (int col = 0; col < SWEEP_PER_ROW; col++) {
+                add(col * SWEEP_SPACING + stagger - SWEEP_ENTRY_SHIFT, y);
+            }
         }
     }
 
     /** Rows of three descending from above the screen, each row shifted at random. */
     private void spawnZigzagRows() {
-        double x = 20;
+        double x = 40;
         double y = -15;
         int rowDir = 1;
         int lastBranch = -1;
         while (enemies.size() < def.count()) {
             double left = wrapX(x);
-            double middle = wrapX(x + 75);
-            double right = wrapX(x + 150);
+            double middle = wrapX(x + COLUMN_SPACING);
+            double right = wrapX(x + 2 * COLUMN_SPACING);
             addWithDir(left, y, rowDir);
             addWithDir(middle, y, rowDir);
             addWithDir(right, y, rowDir);
@@ -157,18 +178,18 @@ public class EnemyFormation {
             } while (branch == lastBranch);
             lastBranch = branch;
             x = (branch == 0 ? left : branch == 1 ? middle : right) + 25;
-            y -= 35;
+            y -= ROW_PITCH;
         }
     }
 
     /** Straight columns of three stacked above the screen. */
-    private void spawnColumns(double startX, double startY, int spacing) {
+    private void spawnColumns(double startX, double startY) {
         double y = startY;
         while (enemies.size() < def.count()) {
             add(startX, y);
-            add(startX + spacing, y);
-            add(startX + 2 * spacing, y);
-            y -= 40;
+            add(startX + COLUMN_SPACING, y);
+            add(startX + 2 * COLUMN_SPACING, y);
+            y -= ROW_PITCH;
         }
     }
 
@@ -178,9 +199,9 @@ public class EnemyFormation {
         while (enemies.size() < def.count()) {
             double base = random.nextDouble() * boardWidth;
             add(base, y);
-            add(base + 70, y);
-            add(base + 140, y);
-            y -= 40;
+            add(base + COLUMN_SPACING, y);
+            add(base + 2 * COLUMN_SPACING, y);
+            y -= ROW_PITCH;
         }
     }
 
@@ -214,10 +235,10 @@ public class EnemyFormation {
 
     private void updateSweep() {
         for (Enemy enemy : enemies) {
+            enemy.moveBy(def.velX(), 0);
             if (enemy.getX() >= boardWidth) {
-                enemy.setX(-5);
-            } else {
-                enemy.moveBy(def.velX(), 0);
+                // Ring wrap keeps the original's even spacing intact.
+                enemy.moveBy(-boardWidth, 0);
             }
         }
     }
@@ -232,14 +253,12 @@ public class EnemyFormation {
         }
         boolean bounce = false;
         for (Enemy enemy : enemies) {
-            enemy.moveBy(0, def.velY() * dirY);
+            enemy.moveBy(def.velX(), def.velY() * dirY);
             if (def.bobOnBounds() && (enemy.getY() >= SHOT_MAX_Y || enemy.getY() <= 15)) {
                 bounce = true;
             }
             if (enemy.getX() >= boardWidth) {
-                enemy.setX(-5);
-            } else {
-                enemy.moveBy(def.velX(), 0);
+                enemy.moveBy(-boardWidth, 0);
             }
         }
         if (bounce) {
@@ -313,7 +332,7 @@ public class EnemyFormation {
             enemy.moveBy(0, def.velY());
             if (enemy.getY() >= VERTICAL_WRAP_Y) {
                 enemy.setY(-65);
-                enemy.setX(wrapX(rainBaseX + rainWrapCounter * 70));
+                enemy.setX(wrapX(rainBaseX + rainWrapCounter * COLUMN_SPACING));
                 rainWrapCounter++;
                 if (rainWrapCounter == 3) {
                     rainWrapCounter = 0;
@@ -374,7 +393,7 @@ public class EnemyFormation {
         }
         if (def.pattern() == Pattern.SWEEP || def.pattern() == Pattern.SWEEP_BOB) {
             for (Enemy enemy : enemies) {
-                enemy.moveBy(-(boardWidth + 160), 0);
+                enemy.moveBy(-SWEEP_RETREAT_SHIFT, 0);
             }
         } else {
             double maxY = enemies.get(0).getY();
