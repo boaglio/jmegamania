@@ -9,6 +9,7 @@ import com.jmegamania.entities.EnemyShot;
 import com.jmegamania.entities.Player;
 
 import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
@@ -27,7 +28,7 @@ public class GamePanel extends JPanel implements Runnable {
 
     public static final int WIDTH = 320;
     public static final int HEIGHT = 240;
-    public static final int SCALE = 2;
+    public static final int SCALE = 4;
     private static final int TARGET_FPS = 60;
     private static final long NANOS_PER_FRAME = 1_000_000_000L / TARGET_FPS;
     private static final int HUD_HEIGHT = 54;
@@ -35,26 +36,29 @@ public class GamePanel extends JPanel implements Runnable {
     private static final int PLAYER_START_X = (WIDTH - Player.WIDTH) / 2;
     private static final int PLAYER_START_Y = PLAYFIELD_HEIGHT - Player.HEIGHT - 3;
     private static final int STARTING_LIVES = 3;
-    private static final int ENEMY_KILL_SCORE = 100;
+    // An extra blaster every 10,000 points, never more than six in reserve.
+    private static final int EXTRA_SHIP_SCORE = 10_000;
+    private static final int MAX_LIVES = 6;
     private static final Color HUD_GRAY = new Color(144, 144, 144);
     private static final Color ENERGY_RED = new Color(164, 26, 28);
     private static final Color ENERGY_YELLOW = new Color(212, 211, 41);
+    private static final Color SCORE_BLUE = new Color(0, 0, 240);
     private static final BufferedImage LIVES_ICON = Sprites.load("lifes.png");
-    private static final int LIVES_ICON_HEIGHT = 18;
+    private static final int LIVES_ICON_HEIGHT = 10;
     private static final int LIVES_ICON_WIDTH =
             LIVES_ICON_HEIGHT * LIVES_ICON.getWidth() / LIVES_ICON.getHeight();
-    private static final double TIMER_MAX = 320;
-    private static final double TIMER_INCREMENT = 0.08;
-    private static final double TIMER_DRAIN_PER_FRAME = 2.5;
-    // Stage-clear bonus: drain the remaining energy into points.
-    private static final double EMPTYING_DRAIN_PER_FRAME = 3;
-    private static final int EMPTYING_SCORE_PER_FRAME = 10;
-    // Level start: refill the energy bar before play begins.
-    private static final double FUELLING_FILL_PER_FRAME = 5;
+    // Energy model taken from the original ROM: the counter at $E6 fills to $53 (83)
+    // one unit per frame, drains one unit every 32 frames during play, and pays out
+    // one unit per two frames as wave-clear bonus. The bar shows it in 20 chunks of 4.
+    private static final int ENERGY_MAX = 83;
+    private static final int ENERGY_DRAIN_FRAMES = 32;
+    private static final int ENERGY_UNITS_PER_CHUNK = 4;
+    private static final int ENERGY_BAR_CHUNKS = 20;
+    private static final int BONUS_DRAIN_FRAMES = 2;
 
     private final Player player = new Player(PLAYER_START_X, PLAYER_START_Y);
     private final List<Bullet> bullets = new ArrayList<>();
-    private final EnemyFormation enemyFormation = new EnemyFormation(15, 12);
+    private EnemyFormation enemyFormation = new EnemyFormation(0, WIDTH);
     private final Sound sfxShoot = Sound.load("shipShoot.wav");
     private final Sound sfxEnemyHit = Sound.load("enemyHit.wav");
     private final Sound sfxShipHit = Sound.load("shipHit.wav");
@@ -62,8 +66,12 @@ public class GamePanel extends JPanel implements Runnable {
     private final Sound sfxEmptying = Sound.load("emptying.wav");
     private int score;
     private int lives = STARTING_LIVES;
-    private double timer;
-    private boolean resetting;
+    private int currentWave;
+    // From the second loop of eight waves onward, every attacker is worth 90 points.
+    private boolean secondLoop;
+    private int nextExtraShipScore = EXTRA_SHIP_SCORE;
+    private int energy;
+    private long frame;
     private boolean emptying;
     private boolean fuelling;
     private boolean dying;
@@ -78,6 +86,13 @@ public class GamePanel extends JPanel implements Runnable {
         addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_F11) {
+                    if (SwingUtilities.getWindowAncestor(GamePanel.this)
+                            instanceof GameWindow window) {
+                        window.toggleFullscreen();
+                    }
+                    return;
+                }
                 if (ended) {
                     if (e.getKeyCode() == KeyEvent.VK_ENTER) {
                         restart();
@@ -100,16 +115,22 @@ public class GamePanel extends JPanel implements Runnable {
     private void restart() {
         score = 0;
         lives = STARTING_LIVES;
-        timer = 0;
-        resetting = false;
+        currentWave = 0;
+        secondLoop = false;
+        nextExtraShipScore = EXTRA_SHIP_SCORE;
+        energy = 0;
         emptying = false;
         dying = false;
         ended = false;
         sfxEmptying.stop();
         bullets.clear();
         player.resetPosition(PLAYER_START_X);
-        enemyFormation.reset();
+        enemyFormation = new EnemyFormation(currentWave, WIDTH);
         beginFuelling();
+    }
+
+    private int waveValue() {
+        return secondLoop ? 90 : enemyFormation.getPoints();
     }
 
     public void start() {
@@ -153,6 +174,14 @@ public class GamePanel extends JPanel implements Runnable {
         if (ended) {
             return;
         }
+        frame++;
+
+        while (score >= nextExtraShipScore) {
+            if (lives < MAX_LIVES) {
+                lives++;
+            }
+            nextExtraShipScore += EXTRA_SHIP_SCORE;
+        }
 
         if (dying) {
             player.updateDeath();
@@ -164,41 +193,38 @@ public class GamePanel extends JPanel implements Runnable {
                     bullets.clear();
                 } else {
                     lives--;
-                    resetting = true;
-                    sfxLoad.play();
-                    enemyFormation.pushOffScreen(WIDTH);
+                    enemyFormation.retreat();
                     player.resetPosition(PLAYER_START_X);
+                    beginFuelling();
                 }
             }
             return;
         }
 
         if (emptying) {
-            timer += EMPTYING_DRAIN_PER_FRAME;
-            score += EMPTYING_SCORE_PER_FRAME;
-            if (timer >= TIMER_MAX) {
+            if (energy > 0) {
+                if (frame % BONUS_DRAIN_FRAMES == 0) {
+                    energy--;
+                    score += waveValue();
+                }
+            } else {
                 emptying = false;
                 sfxEmptying.stop();
-                enemyFormation.reset();
+                currentWave = (currentWave + 1) % EnemyFormation.WAVE_COUNT;
+                if (currentWave == 0) {
+                    secondLoop = true;
+                }
+                enemyFormation = new EnemyFormation(currentWave, WIDTH);
                 beginFuelling();
             }
             return;
         }
 
         if (fuelling) {
-            timer -= FUELLING_FILL_PER_FRAME;
-            if (timer <= 0) {
-                timer = 0;
+            energy++;
+            if (energy >= ENERGY_MAX) {
+                energy = ENERGY_MAX;
                 fuelling = false;
-            }
-            return;
-        }
-
-        if (resetting) {
-            timer -= TIMER_DRAIN_PER_FRAME;
-            if (timer <= 0) {
-                timer = 0;
-                resetting = false;
             }
             return;
         }
@@ -224,7 +250,7 @@ public class GamePanel extends JPanel implements Runnable {
                 if (bullet.getBounds().intersects(enemy.getBounds())) {
                     enemyFormation.remove(enemy);
                     it.remove();
-                    score += ENEMY_KILL_SCORE;
+                    score += waveValue();
                     sfxEnemyHit.play();
                     break;
                 }
@@ -254,8 +280,10 @@ public class GamePanel extends JPanel implements Runnable {
             return;
         }
 
-        timer = Math.min(TIMER_MAX, timer + TIMER_INCREMENT);
-        if (timer >= TIMER_MAX) {
+        if (frame % ENERGY_DRAIN_FRAMES == 0 && energy > 0) {
+            energy--;
+        }
+        if (energy <= 0) {
             dying = true;
             player.die();
             bullets.clear();
@@ -263,16 +291,17 @@ public class GamePanel extends JPanel implements Runnable {
     }
 
     private void hitPlayer() {
-        if (timer < TIMER_MAX) {
+        if (energy > 0) {
             sfxShipHit.play();
         }
-        timer = TIMER_MAX;
+        // Being hit wipes the energy out instantly, as in the original.
+        energy = 0;
     }
 
     /** Starts a level with an empty bar that fills back up, as at the beginning of the game. */
     private void beginFuelling() {
         fuelling = true;
-        timer = TIMER_MAX;
+        energy = 0;
         sfxLoad.play();
     }
 
@@ -281,7 +310,14 @@ public class GamePanel extends JPanel implements Runnable {
         super.paintComponent(g);
         Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
-        g2.scale(SCALE, SCALE);
+        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        // Fit the 320x240 playfield to the panel, letterboxing to keep the aspect ratio.
+        double scale = Math.min(getWidth() / (double) WIDTH, getHeight() / (double) HEIGHT);
+        g2.translate((getWidth() - WIDTH * scale) / 2, (getHeight() - HEIGHT * scale) / 2);
+        g2.scale(scale, scale);
+        // Sprites entering from off screen must not show up in the letterbox bars.
+        g2.clipRect(0, 0, WIDTH, HEIGHT);
 
         player.render(g2);
         for (Bullet bullet : bullets) {
@@ -312,21 +348,22 @@ public class GamePanel extends JPanel implements Runnable {
 
         g2.setColor(ENERGY_RED);
         g2.fillRect(barX, barY, barWidth, barHeight);
-        int yellowWidth = (int) Math.round(barWidth * (1 - timer / TIMER_MAX));
+        // The original bar moves in chunks of four energy units, not continuously.
+        int chunks = Math.min(ENERGY_BAR_CHUNKS, energy / ENERGY_UNITS_PER_CHUNK);
+        int yellowWidth = chunks * (barWidth / ENERGY_BAR_CHUNKS);
         g2.setColor(ENERGY_YELLOW);
         g2.fillRect(barX, barY, yellowWidth, barHeight);
 
-        g2.setFont(new Font(Font.MONOSPACED, Font.BOLD, 11));
-        g2.setColor(Color.BLACK);
+        g2.setFont(new Font(Font.MONOSPACED, Font.BOLD, 14));
+        g2.setColor(SCORE_BLUE);
         int textY = PLAYFIELD_HEIGHT + HUD_HEIGHT - 8;
-        g2.drawString("SCORE " + score, 8, textY);
+        g2.drawString(String.valueOf(score), 8, textY);
 
-        String livesText = "x" + lives;
-        FontMetrics metrics = g2.getFontMetrics();
-        int groupWidth = LIVES_ICON_WIDTH + 4 + metrics.stringWidth(livesText);
-        int groupX = WIDTH - groupWidth - 8;
-        int iconY = textY - LIVES_ICON_HEIGHT + 4;
-        g2.drawImage(LIVES_ICON, groupX, iconY, LIVES_ICON_WIDTH, LIVES_ICON_HEIGHT, null);
-        g2.drawString(livesText, groupX + LIVES_ICON_WIDTH + 4, textY);
+        // Reserve blasters drawn as a row of ship icons, right-aligned.
+        int iconY = textY - LIVES_ICON_HEIGHT + 2;
+        for (int i = 0; i < lives; i++) {
+            int iconX = WIDTH - 8 - (i + 1) * (LIVES_ICON_WIDTH + 2);
+            g2.drawImage(LIVES_ICON, iconX, iconY, LIVES_ICON_WIDTH, LIVES_ICON_HEIGHT, null);
+        }
     }
 }

@@ -8,7 +8,7 @@ public class EnemyShot {
 
     private static final int WIDTH = 2;
     private static final int HEIGHT = 10;
-    private static final int SPEED = 3;
+    private static final int SPEED = 2;
     private static final Color COLOR = Color.BLUE;
 
     private final int x;

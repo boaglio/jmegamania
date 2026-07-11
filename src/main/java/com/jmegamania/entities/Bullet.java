@@ -7,8 +7,8 @@ import java.awt.Rectangle;
 public class Bullet {
 
     private static final int WIDTH = 2;
-    private static final int HEIGHT = Enemy.HEIGHT;
-    private static final int SPEED = 2;
+    private static final int HEIGHT = 8;
+    private static final int SPEED = 3;
 
     private int x;
     private int y;

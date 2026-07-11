@@ -1,43 +1,73 @@
 package com.jmegamania.entities;
 
-import com.jmegamania.engine.Sprites;
-
 import java.awt.Graphics2D;
 import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 
 public class Enemy {
 
-    public static final int WIDTH = 18;
-    public static final int HEIGHT = 13;
-    private static final BufferedImage SPRITE = Sprites.load("enemy01.png");
+    private final BufferedImage sprite;
+    private final int width;
+    private final int height;
+    private double x;
+    private double y;
+    // Per-enemy horizontal direction; only the radial-tire wave flips it individually.
+    private int dir = 1;
 
-    private int x;
-    private int y;
-
-    public Enemy(int x, int y) {
+    public Enemy(BufferedImage sprite, int width, int height, double x, double y) {
+        this.sprite = sprite;
+        this.width = width;
+        this.height = height;
         this.x = x;
         this.y = y;
     }
 
-    public int getX() {
+    public double getX() {
         return x;
     }
 
-    public int getY() {
+    public double getY() {
         return y;
     }
 
-    public void moveBy(int dx, int dy) {
+    public void setX(double x) {
+        this.x = x;
+    }
+
+    public void setY(double y) {
+        this.y = y;
+    }
+
+    public int getWidth() {
+        return width;
+    }
+
+    public int getHeight() {
+        return height;
+    }
+
+    public int getDir() {
+        return dir;
+    }
+
+    public void setDir(int dir) {
+        this.dir = dir;
+    }
+
+    public void flipDir() {
+        dir = -dir;
+    }
+
+    public void moveBy(double dx, double dy) {
         x += dx;
         y += dy;
     }
 
     public Rectangle getBounds() {
-        return new Rectangle(x, y, WIDTH, HEIGHT);
+        return new Rectangle((int) Math.round(x), (int) Math.round(y), width, height);
     }
 
     public void render(Graphics2D g) {
-        g.drawImage(SPRITE, x, y, WIDTH, HEIGHT, null);
+        g.drawImage(sprite, (int) Math.round(x), (int) Math.round(y), width, height, null);
     }
 }
