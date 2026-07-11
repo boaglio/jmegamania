@@ -3,6 +3,12 @@
 A Java port of the Atari 2600 game **Megamania**, built with Swing/Java2D.
 Created for learning purposes and licensed under the GNU GPL (see `LICENSE`).
 
+## Screenshots
+
+| Wave 1 — hamburgers | Wave 2 — cookies | Wave 8 — space dice |
+|---|---|---|
+| ![Wave 1: hamburgers sweeping across the top](docs/wave1.png) | ![Wave 2: cookies zigzagging down](docs/wave2.png) | ![Wave 8: space dice raining down](docs/wave8.png) |
+
 ## Requirements
 - Java 17+
 - Maven
@@ -31,7 +37,10 @@ Faithful to the original Atari 2600 rules:
   diamonds, steam irons, bow ties and space dice. Horizontal waves sweep across
   the MegaSphere (wrapping at the edges); vertical waves descend from the top.
 - First loop scoring: 20/30/40/50/60/70/80/90 points per object by wave.
-  From the second loop on, every object is worth 90 points.
+  From the second loop on, every object is worth 90 points and the patterns
+  harden: hamburgers pause then dash, bugs undulate vertically, cookies and
+  tires dive instead of stepping down, and dice fall at ~45 degrees in rows
+  that alternate direction. Steam irons never change.
 - The energy bar uses the ROM's exact timing: 83 units, draining one unit every
   32 frames (a full bar lasts about 44 seconds), shown in 20 chunks of four
   units. Running dry costs a blaster. Each unit left when a wave is cleared
@@ -47,6 +56,8 @@ F11 to toggle fullscreen.
 ## Development
 
 See [AGENTS.md](AGENTS.md) for project layout, build/test commands, and coding conventions.
+
+Dev aid: `java -Djmegamania.wave=N -jar target/jmegamania.jar` starts at wave N (0-7).
 
 ## References
 

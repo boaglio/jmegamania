@@ -56,9 +56,13 @@ public class GamePanel extends JPanel implements Runnable {
     private static final int ENERGY_BAR_CHUNKS = 20;
     private static final int BONUS_DRAIN_FRAMES = 2;
 
+    // Dev aid: -Djmegamania.wave=N starts the game at wave N (0-7).
+    private static final int START_WAVE =
+            Math.floorMod(Integer.getInteger("jmegamania.wave", 0), EnemyFormation.WAVE_COUNT);
+
     private final Player player = new Player(PLAYER_START_X, PLAYER_START_Y);
     private final List<Bullet> bullets = new ArrayList<>();
-    private EnemyFormation enemyFormation = new EnemyFormation(0, WIDTH);
+    private EnemyFormation enemyFormation = new EnemyFormation(START_WAVE, WIDTH);
     private final Sound sfxShoot = Sound.load("shipShoot.wav");
     private final Sound sfxEnemyHit = Sound.load("enemyHit.wav");
     private final Sound sfxShipHit = Sound.load("shipHit.wav");
@@ -115,7 +119,7 @@ public class GamePanel extends JPanel implements Runnable {
     private void restart() {
         score = 0;
         lives = STARTING_LIVES;
-        currentWave = 0;
+        currentWave = START_WAVE;
         secondLoop = false;
         nextExtraShipScore = EXTRA_SHIP_SCORE;
         energy = 0;
@@ -214,7 +218,7 @@ public class GamePanel extends JPanel implements Runnable {
                 if (currentWave == 0) {
                     secondLoop = true;
                 }
-                enemyFormation = new EnemyFormation(currentWave, WIDTH);
+                enemyFormation = new EnemyFormation(currentWave, WIDTH, secondLoop);
                 beginFuelling();
             }
             return;

@@ -83,6 +83,17 @@ public class EnemyFormation {
     private static final int ZIGZAG_STEP_NOW = 22;
     private static final int ZIGZAG_STEP_LATER = 14;
     private static final int ZIGZAG_STEP_DELAY_FRAMES = 36;
+    // Second loop: hamburgers cruise, pause for a while, then dash before settling.
+    private static final int PHASE_CRUISE_FRAMES = 150;
+    private static final int PHASE_PAUSE_FRAMES = 90;
+    private static final int PHASE_DASH_FRAMES = 50;
+    private static final double DASH_SPEED = 5;
+    // Second loop: cookies and tires dive a full drop quickly instead of stepping.
+    private static final int DIVE_FRAMES = 18;
+    private static final double COOKIE_DIVE_SPEED = 4;
+    private static final double TIRE_DIVE_SPEED = 5;
+    // Second loop: dice drift sideways at ~45 degrees, rows alternating direction.
+    private static final double RAIN_DRIFT_SPEED = 1.25;
 
     private static final class PendingShot {
         final Enemy source;
@@ -94,6 +105,8 @@ public class EnemyFormation {
         }
     }
 
+    private final int waveIndex;
+    private final boolean secondLoop;
     private final WaveDef def;
     private final BufferedImage sprite;
     private final int boardWidth;
@@ -115,9 +128,19 @@ public class EnemyFormation {
     // Space dice: each wrapped triplet re-enters at a shared random column.
     private double rainBaseX;
     private int rainWrapCounter;
+    // Second-loop hamburgers: 0 = cruise, 1 = pause, 2 = dash.
+    private int sweepPhase;
+    private int sweepPhaseTimer = PHASE_CRUISE_FRAMES;
+    private int diveFramesLeft;
 
     public EnemyFormation(int waveIndex, int boardWidth) {
-        this.def = WAVES[waveIndex % WAVE_COUNT];
+        this(waveIndex, boardWidth, false);
+    }
+
+    public EnemyFormation(int waveIndex, int boardWidth, boolean secondLoop) {
+        this.waveIndex = waveIndex % WAVE_COUNT;
+        this.secondLoop = secondLoop;
+        this.def = secondLoop ? secondLoopVariant(this.waveIndex) : WAVES[this.waveIndex];
         this.sprite = Sprites.load(def.sprite());
         this.boardWidth = boardWidth;
         this.flipCountdown = def.flipInterval();
@@ -125,6 +148,23 @@ public class EnemyFormation {
         this.toggleYCountdown = randomRange(120, 222);
         this.rainBaseX = random.nextDouble() * boardWidth;
         spawn();
+    }
+
+    /**
+     * From the second loop of eight waves on, the patterns change: hamburgers pause
+     * and dash, bugs undulate vertically, cookies and tires dive, and dice drift
+     * sideways. Steam irons are the one wave that never changes.
+     */
+    private static WaveDef secondLoopVariant(int waveIndex) {
+        WaveDef base = WAVES[waveIndex];
+        if (waveIndex == 2) {
+            // Bugs gain a vertical undulation like the bow ties'.
+            return new WaveDef(base.sprite(), base.points(), base.width(), base.height(),
+                    Pattern.SWEEP_BOB, base.velX(), 0.3,
+                    base.count(), base.shotInterval(), base.volleyHigh(), base.volleyLow(),
+                    base.shotHeightLimited(), 70, base.perEnemyDir(), false);
+        }
+        return base;
     }
 
     public int getPoints() {
@@ -196,12 +236,14 @@ public class EnemyFormation {
     /** Dice rows at a random column base, falling straight down. */
     private void spawnRain() {
         double y = -75;
+        int rowDir = 1;
         while (enemies.size() < def.count()) {
             double base = random.nextDouble() * boardWidth;
-            add(base, y);
-            add(base + COLUMN_SPACING, y);
-            add(base + 2 * COLUMN_SPACING, y);
+            addWithDir(base, y, rowDir);
+            addWithDir(base + COLUMN_SPACING, y, rowDir);
+            addWithDir(base + 2 * COLUMN_SPACING, y, rowDir);
             y -= ROW_PITCH;
+            rowDir = -rowDir;
         }
     }
 
@@ -234,13 +276,34 @@ public class EnemyFormation {
     }
 
     private void updateSweep() {
+        double speed = sweepSpeed();
         for (Enemy enemy : enemies) {
-            enemy.moveBy(def.velX(), 0);
+            enemy.moveBy(speed, 0);
             if (enemy.getX() >= boardWidth) {
                 // Ring wrap keeps the original's even spacing intact.
                 enemy.moveBy(-boardWidth, 0);
             }
         }
+    }
+
+    /** Second-loop hamburgers periodically pause, then dash before settling down. */
+    private double sweepSpeed() {
+        if (!secondLoop || waveIndex != 0) {
+            return def.velX();
+        }
+        if (--sweepPhaseTimer <= 0) {
+            sweepPhase = (sweepPhase + 1) % 3;
+            sweepPhaseTimer = switch (sweepPhase) {
+                case 1 -> PHASE_PAUSE_FRAMES;
+                case 2 -> PHASE_DASH_FRAMES;
+                default -> PHASE_CRUISE_FRAMES;
+            };
+        }
+        return switch (sweepPhase) {
+            case 1 -> 0;
+            case 2 -> DASH_SPEED;
+            default -> def.velX();
+        };
     }
 
     private void updateSweepBob() {
@@ -271,17 +334,31 @@ public class EnemyFormation {
         if (flipCountdown <= 0) {
             flipCountdown = def.flipInterval();
             dirX = -dirX;
-            for (Enemy enemy : enemies) {
-                if (def.perEnemyDir()) {
+            if (secondLoop) {
+                // Cookies and tires dive a full drop quickly instead of stepping.
+                diveFramesLeft = DIVE_FRAMES;
+            } else {
+                for (Enemy enemy : enemies) {
+                    enemy.moveBy(0, ZIGZAG_STEP_NOW);
+                }
+                zigzagStepCountdown = ZIGZAG_STEP_DELAY_FRAMES;
+            }
+            if (def.perEnemyDir()) {
+                for (Enemy enemy : enemies) {
                     enemy.flipDir();
                 }
-                enemy.moveBy(0, ZIGZAG_STEP_NOW);
             }
-            zigzagStepCountdown = ZIGZAG_STEP_DELAY_FRAMES;
         }
         if (zigzagStepCountdown >= 0 && --zigzagStepCountdown < 0) {
             for (Enemy enemy : enemies) {
                 enemy.moveBy(0, ZIGZAG_STEP_LATER);
+            }
+        }
+        if (diveFramesLeft > 0) {
+            diveFramesLeft--;
+            double diveSpeed = waveIndex == 3 ? TIRE_DIVE_SPEED : COOKIE_DIVE_SPEED;
+            for (Enemy enemy : enemies) {
+                enemy.moveBy(0, diveSpeed);
             }
         }
         for (Enemy enemy : enemies) {
@@ -329,7 +406,14 @@ public class EnemyFormation {
 
     private void updateRain() {
         for (Enemy enemy : enemies) {
-            enemy.moveBy(0, def.velY());
+            // Second-loop dice fall at ~45 degrees, rows alternating left and right.
+            double drift = secondLoop ? RAIN_DRIFT_SPEED * enemy.getDir() : 0;
+            enemy.moveBy(drift, def.velY());
+            if (enemy.getX() >= boardWidth) {
+                enemy.moveBy(-boardWidth - ENEMY_W, 0);
+            } else if (enemy.getX() + ENEMY_W <= 0) {
+                enemy.moveBy(boardWidth + ENEMY_W, 0);
+            }
             if (enemy.getY() >= VERTICAL_WRAP_Y) {
                 enemy.setY(-65);
                 enemy.setX(wrapX(rainBaseX + rainWrapCounter * COLUMN_SPACING));

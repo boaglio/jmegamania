@@ -66,6 +66,45 @@ class EnemyFormationTest {
     }
 
     @Test
+    void secondLoopDiceDriftSidewaysButFirstLoopFallStraight() {
+        for (boolean secondLoop : new boolean[]{false, true}) {
+            EnemyFormation formation = new EnemyFormation(7, BOARD_WIDTH, secondLoop);
+            Enemy die = formation.getEnemies().get(0);
+            double startX = die.getX();
+            for (int frame = 0; frame < 30; frame++) {
+                formation.update(BOARD_WIDTH, BOARD_HEIGHT);
+            }
+            if (secondLoop) {
+                assertTrue(Math.abs(die.getX() - startX) > 1, "loop-2 dice must drift sideways");
+            } else {
+                assertEquals(startX, die.getX(), 0.001, "loop-1 dice must fall straight");
+            }
+        }
+    }
+
+    @Test
+    void secondLoopHamburgersPauseAndDash() {
+        EnemyFormation formation = new EnemyFormation(0, BOARD_WIDTH, true);
+        Enemy burger = formation.getEnemies().get(0);
+        boolean paused = false;
+        boolean dashed = false;
+        double prevX = burger.getX();
+        for (int frame = 0; frame < 400; frame++) {
+            formation.update(BOARD_WIDTH, BOARD_HEIGHT);
+            double dx = burger.getX() - prevX;
+            prevX = burger.getX();
+            if (dx == 0) {
+                paused = true;
+            }
+            if (dx > 3 && dx < 10) {
+                dashed = true;
+            }
+        }
+        assertTrue(paused, "loop-2 hamburgers must pause");
+        assertTrue(dashed, "loop-2 hamburgers must dash");
+    }
+
+    @Test
     void retreatClearsShotsAndKeepsSurvivors() {
         EnemyFormation formation = new EnemyFormation(0, BOARD_WIDTH);
         for (int frame = 0; frame < 600; frame++) {
