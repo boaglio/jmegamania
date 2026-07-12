@@ -8,7 +8,9 @@ public class Bullet {
 
     private static final int WIDTH = 2;
     private static final int HEIGHT = 8;
-    private static final int SPEED = 3;
+    // Measured from the original ROM: the missile climbs 4 scanlines per frame,
+    // which is 5px at this port's 1.25x vertical scale.
+    private static final int SPEED = 5;
 
     private int x;
     private int y;

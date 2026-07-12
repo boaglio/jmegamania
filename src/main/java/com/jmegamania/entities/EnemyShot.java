@@ -8,11 +8,13 @@ public class EnemyShot {
 
     private static final int WIDTH = 2;
     private static final int HEIGHT = 10;
-    private static final int SPEED = 2;
+    // Measured from the original ROM: shots fall 2 scanlines per frame,
+    // which is 2.5px at this port's 1.25x vertical scale.
+    private static final double SPEED = 2.5;
     private static final Color COLOR = Color.BLUE;
 
     private final int x;
-    private int y;
+    private double y;
 
     public EnemyShot(int x, int y) {
         this.x = x;
@@ -28,11 +30,11 @@ public class EnemyShot {
     }
 
     public Rectangle getBounds() {
-        return new Rectangle(x, y, WIDTH, HEIGHT);
+        return new Rectangle(x, (int) Math.round(y), WIDTH, HEIGHT);
     }
 
     public void render(Graphics2D g) {
         g.setColor(COLOR);
-        g.fillRect(x, y, WIDTH, HEIGHT);
+        g.fillRect(x, (int) Math.round(y), WIDTH, HEIGHT);
     }
 }

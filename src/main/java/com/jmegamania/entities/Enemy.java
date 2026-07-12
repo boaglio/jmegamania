@@ -6,7 +6,6 @@ import java.awt.image.BufferedImage;
 
 public class Enemy {
 
-    private final BufferedImage sprite;
     private final int width;
     private final int height;
     private double x;
@@ -14,8 +13,7 @@ public class Enemy {
     // Per-enemy horizontal direction; only the radial-tire wave flips it individually.
     private int dir = 1;
 
-    public Enemy(BufferedImage sprite, int width, int height, double x, double y) {
-        this.sprite = sprite;
+    public Enemy(int width, int height, double x, double y) {
         this.width = width;
         this.height = height;
         this.x = x;
@@ -67,7 +65,7 @@ public class Enemy {
         return new Rectangle((int) Math.round(x), (int) Math.round(y), width, height);
     }
 
-    public void render(Graphics2D g) {
+    public void render(Graphics2D g, BufferedImage sprite) {
         g.drawImage(sprite, (int) Math.round(x), (int) Math.round(y), width, height, null);
     }
 }

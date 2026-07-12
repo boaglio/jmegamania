@@ -43,6 +43,12 @@ public class GamePanel extends JPanel implements Runnable {
     private static final Color ENERGY_RED = new Color(164, 26, 28);
     private static final Color ENERGY_YELLOW = new Color(212, 211, 41);
     private static final Color SCORE_BLUE = new Color(0, 0, 240);
+    private static final Color MARQUEE_YELLOW = new Color(212, 175, 40);
+    // Bottom strip below the gray band, holding the branding line like the original.
+    private static final int MARQUEE_HEIGHT = 15;
+    // At game over the marquee alternates texts every 256 frames (the original
+    // toggles on its frame counter overflowing, about every 4.3 seconds).
+    private static final int MARQUEE_SWAP_FRAMES = 256;
     private static final BufferedImage LIVES_ICON = Sprites.load("lifes.png");
     private static final int LIVES_ICON_HEIGHT = 10;
     private static final int LIVES_ICON_WIDTH =
@@ -56,9 +62,12 @@ public class GamePanel extends JPanel implements Runnable {
     private static final int ENERGY_BAR_CHUNKS = 20;
     private static final int BONUS_DRAIN_FRAMES = 2;
 
-    // Dev aid: -Djmegamania.wave=N starts the game at wave N (0-7).
+    // Dev aids: -Djmegamania.wave=N starts at wave N (0-7); -Djmegamania.lives=N
+    // overrides the starting reserve count.
     private static final int START_WAVE =
             Math.floorMod(Integer.getInteger("jmegamania.wave", 0), EnemyFormation.WAVE_COUNT);
+    private static final int START_LIVES =
+            Math.min(MAX_LIVES, Math.max(0, Integer.getInteger("jmegamania.lives", STARTING_LIVES)));
 
     private final Player player = new Player(PLAYER_START_X, PLAYER_START_Y);
     private final List<Bullet> bullets = new ArrayList<>();
@@ -69,7 +78,7 @@ public class GamePanel extends JPanel implements Runnable {
     private final Sound sfxLoad = Sound.load("load.wav");
     private final Sound sfxEmptying = Sound.load("emptying.wav");
     private int score;
-    private int lives = STARTING_LIVES;
+    private int lives = START_LIVES;
     private int currentWave;
     // From the second loop of eight waves onward, every attacker is worth 90 points.
     private boolean secondLoop;
@@ -118,7 +127,7 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void restart() {
         score = 0;
-        lives = STARTING_LIVES;
+        lives = START_LIVES;
         currentWave = START_WAVE;
         secondLoop = false;
         nextExtraShipScore = EXTRA_SHIP_SCORE;
@@ -175,10 +184,10 @@ public class GamePanel extends JPanel implements Runnable {
     }
 
     private void update() {
+        frame++;
         if (ended) {
             return;
         }
-        frame++;
 
         while (score >= nextExtraShipScore) {
             if (lives < MAX_LIVES) {
@@ -336,11 +345,11 @@ public class GamePanel extends JPanel implements Runnable {
 
     private void renderHud(Graphics2D g2) {
         g2.setColor(HUD_GRAY);
-        g2.fillRect(0, PLAYFIELD_HEIGHT, WIDTH, HUD_HEIGHT);
+        g2.fillRect(0, PLAYFIELD_HEIGHT, WIDTH, HUD_HEIGHT - MARQUEE_HEIGHT);
 
         int barWidth = 220;
         int barX = (WIDTH - barWidth) / 2;
-        int barY = PLAYFIELD_HEIGHT + 8;
+        int barY = PLAYFIELD_HEIGHT + 6;
         int barHeight = 12;
 
         g2.setFont(new Font(Font.MONOSPACED, Font.BOLD, 9));
@@ -360,7 +369,7 @@ public class GamePanel extends JPanel implements Runnable {
 
         g2.setFont(new Font(Font.MONOSPACED, Font.BOLD, 14));
         g2.setColor(SCORE_BLUE);
-        int textY = PLAYFIELD_HEIGHT + HUD_HEIGHT - 8;
+        int textY = PLAYFIELD_HEIGHT + HUD_HEIGHT - MARQUEE_HEIGHT - 5;
         g2.drawString(String.valueOf(score), 8, textY);
 
         // Reserve blasters drawn as a row of ship icons, right-aligned.
@@ -369,5 +378,24 @@ public class GamePanel extends JPanel implements Runnable {
             int iconX = WIDTH - 8 - (i + 1) * (LIVES_ICON_WIDTH + 2);
             g2.drawImage(LIVES_ICON, iconX, iconY, LIVES_ICON_WIDTH, LIVES_ICON_HEIGHT, null);
         }
+
+        renderMarquee(g2);
+    }
+
+    /**
+     * Branding line on the black strip under the gray band, as in the original:
+     * ACTIVISION while playing, alternating with the copyright line at game over.
+     */
+    private void renderMarquee(Graphics2D g2) {
+        String text = ended && (frame / MARQUEE_SWAP_FRAMES) % 2 == 1
+                ? "COPYRIGHT 1982"
+                : "ACTIVISION";
+        g2.setFont(new Font(Font.MONOSPACED, Font.BOLD, 10));
+        g2.setColor(MARQUEE_YELLOW);
+        FontMetrics metrics = g2.getFontMetrics();
+        int x = (WIDTH - metrics.stringWidth(text)) / 2;
+        int y = HEIGHT - (MARQUEE_HEIGHT - metrics.getAscent() + metrics.getDescent()) / 2
+                - metrics.getDescent();
+        g2.drawString(text, x, y);
     }
 }

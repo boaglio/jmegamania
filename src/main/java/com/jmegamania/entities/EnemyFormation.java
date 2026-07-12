@@ -25,7 +25,7 @@ public class EnemyFormation {
                            Pattern pattern, double velX, double velY,
                            int count, int shotInterval, int volleyHigh, int volleyLow,
                            boolean shotHeightLimited, int flipInterval, boolean perEnemyDir,
-                           boolean bobOnBounds) {
+                           boolean bobOnBounds, int frameCount) {
     }
 
     // Geometry doubled from the 160px-wide original: 8px sprites -> 16, objects
@@ -37,28 +37,28 @@ public class EnemyFormation {
     private static final WaveDef[] WAVES = {
             // 1. Hamburgers: stream steadily across the screen.
             new WaveDef("enemy01.png", 20, ENEMY_W, ENEMY_H, Pattern.SWEEP, SWEEP_SPEED, 0,
-                    15, 150, 3, 2, false, 0, false, false),
+                    15, 150, 3, 2, false, 0, false, false, 3),
             // 2. Cookies: sweep back and forth, stepping down at each turn.
             new WaveDef("enemy02.png", 30, ENEMY_W, ENEMY_H, Pattern.ZIGZAG, SWEEP_SPEED, 0,
-                    18, 100, 2, 1, true, 170, false, false),
+                    18, 100, 2, 1, true, 170, false, false, 3),
             // 3. Bugs: like hamburgers.
             new WaveDef("enemy03.png", 40, ENEMY_W, ENEMY_H, Pattern.SWEEP, SWEEP_SPEED, 0,
-                    15, 150, 3, 2, false, 0, false, false),
+                    15, 150, 3, 2, false, 0, false, false, 3),
             // 4. Radial tires: cookies pattern, but rows alternate direction individually.
             new WaveDef("enemy04.png", 50, ENEMY_W, ENEMY_H, Pattern.ZIGZAG, SWEEP_SPEED, 0,
-                    18, 100, 2, 1, true, 170, true, false),
-            // 5. Diamonds: sweep across while slowly bobbing up and down.
+                    18, 100, 2, 1, true, 170, true, false, 3),
+            // 5. Diamonds: sweep across while slowly bobbing up and down, spinning.
             new WaveDef("enemy05.png", 60, ENEMY_W, ENEMY_H, Pattern.SWEEP_BOB, SWEEP_SPEED, 0.05,
-                    15, 150, 3, 2, false, 0, false, true),
+                    15, 150, 3, 2, false, 0, false, true, 4),
             // 6. Steam irons: descend in columns with erratic stop-and-go jinks.
             new WaveDef("enemy06.png", 70, ENEMY_W, ENEMY_H, Pattern.STOP_GO, SWEEP_SPEED, 0.6,
-                    18, 100, 2, 1, true, 50, false, false),
-            // 7. Bow ties: fast sweep with a pronounced vertical weave.
+                    18, 100, 2, 1, true, 50, false, false, 3),
+            // 7. Bow ties: fast sweep with a pronounced vertical weave, spinning.
             new WaveDef("enemy07.png", 80, ENEMY_W, ENEMY_H, Pattern.SWEEP_BOB, SWEEP_SPEED, 0.75,
-                    15, 150, 3, 2, false, 70, false, false),
-            // 8. Space dice: rain straight down, reappearing at random columns.
+                    15, 150, 3, 2, false, 70, false, false, 4),
+            // 8. Space dice: rain straight down, tumbling through 16 phases.
             new WaveDef("enemy08.png", 90, ENEMY_W, 12, Pattern.RAIN, 0, 1.25,
-                    18, 0, 0, 0, false, 0, false, false),
+                    18, 0, 0, 0, false, 0, false, false, 16),
     };
 
     // Horizontal waves: three staggered rows of five, tiling the wrap ring exactly.
@@ -108,7 +108,11 @@ public class EnemyFormation {
     private final int waveIndex;
     private final boolean secondLoop;
     private final WaveDef def;
-    private final BufferedImage sprite;
+    // Authentic ROM animation: one frame step every four game frames. Waves with
+    // four frames ping-pong 0-1-2-3-2-1 (the diamond and bow-tie spin); the dice
+    // cycle through all sixteen tumble phases.
+    private final BufferedImage[] frames;
+    private final int[] frameSequence;
     private final int boardWidth;
     private final List<Enemy> enemies = new ArrayList<>();
     private final List<EnemyShot> shots = new ArrayList<>();
@@ -132,6 +136,7 @@ public class EnemyFormation {
     private int sweepPhase;
     private int sweepPhaseTimer = PHASE_CRUISE_FRAMES;
     private int diveFramesLeft;
+    private int animTick;
 
     public EnemyFormation(int waveIndex, int boardWidth) {
         this(waveIndex, boardWidth, false);
@@ -141,7 +146,14 @@ public class EnemyFormation {
         this.waveIndex = waveIndex % WAVE_COUNT;
         this.secondLoop = secondLoop;
         this.def = secondLoop ? secondLoopVariant(this.waveIndex) : WAVES[this.waveIndex];
-        this.sprite = Sprites.load(def.sprite());
+        this.frames = new BufferedImage[def.frameCount()];
+        for (int i = 0; i < frames.length; i++) {
+            this.frames[i] = Sprites.load(
+                    String.format("enemy%02d_%d.png", this.waveIndex + 1, i));
+        }
+        this.frameSequence = def.frameCount() == 4
+                ? new int[]{0, 1, 2, 3, 2, 1}
+                : identity(def.frameCount());
         this.boardWidth = boardWidth;
         this.flipCountdown = def.flipInterval();
         this.toggleXCountdown = randomRange(30, 180);
@@ -162,7 +174,7 @@ public class EnemyFormation {
             return new WaveDef(base.sprite(), base.points(), base.width(), base.height(),
                     Pattern.SWEEP_BOB, base.velX(), 0.3,
                     base.count(), base.shotInterval(), base.volleyHigh(), base.volleyLow(),
-                    base.shotHeightLimited(), 70, base.perEnemyDir(), false);
+                    base.shotHeightLimited(), 70, base.perEnemyDir(), false, base.frameCount());
         }
         return base;
     }
@@ -248,13 +260,21 @@ public class EnemyFormation {
     }
 
     private void add(double x, double y) {
-        enemies.add(new Enemy(sprite, def.width(), def.height(), x, y));
+        enemies.add(new Enemy(def.width(), def.height(), x, y));
     }
 
     private void addWithDir(double x, double y, int dir) {
-        Enemy enemy = new Enemy(sprite, def.width(), def.height(), x, y);
+        Enemy enemy = new Enemy(def.width(), def.height(), x, y);
         enemy.setDir(dir);
         enemies.add(enemy);
+    }
+
+    private static int[] identity(int n) {
+        int[] seq = new int[n];
+        for (int i = 0; i < n; i++) {
+            seq[i] = i;
+        }
+        return seq;
     }
 
     private double wrapX(double x) {
@@ -265,6 +285,7 @@ public class EnemyFormation {
         if (enemies.isEmpty()) {
             return;
         }
+        animTick++;
         switch (def.pattern()) {
             case SWEEP -> updateSweep();
             case SWEEP_BOB -> updateSweepBob();
@@ -496,8 +517,10 @@ public class EnemyFormation {
     }
 
     public void render(Graphics2D g) {
+        BufferedImage frame =
+                frames[frameSequence[(animTick / 4) % frameSequence.length]];
         for (Enemy enemy : enemies) {
-            enemy.render(g);
+            enemy.render(g, frame);
         }
         for (EnemyShot shot : shots) {
             shot.render(g);
