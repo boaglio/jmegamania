@@ -8,19 +8,17 @@ import java.awt.event.KeyEvent;
 import org.junit.jupiter.api.Test;
 
 /**
- * Behavioural tests for the player ship: it must stay inside the playfield walls
- * and its death must play out over a fixed number of frames, matching the
- * original Megamania timing.
+ * Behavioural tests for the player ship: it must stay inside the original
+ * ROM's walls (hardware pixels 24..132, doubled here), refire while the
+ * button is held (game 1's guided-missile debounce), and die over the ROM's
+ * 31-step (124-frame) color ramp.
  */
 class PlayerTest {
 
     private static final int BOARD_WIDTH = 320;
-    // Mirrors Player's internal HORIZONTAL_MARGIN / WIDTH so the expected clamp
-    // bounds are spelled out here rather than copied blindly from the class.
-    private static final int MARGIN = 5;
-    private static final int WIDTH = Player.WIDTH;
-    private static final int LEFT_LIMIT = MARGIN;
-    private static final int RIGHT_LIMIT = BOARD_WIDTH - MARGIN - WIDTH;
+    private static final int LEFT_LIMIT = Player.X_MIN;
+    private static final int RIGHT_LIMIT = Player.X_MAX;
+    private static final int DEATH_FRAMES = 124;
 
     private static int xOf(Player player) {
         return player.getBounds().x;
@@ -78,18 +76,34 @@ class PlayerTest {
     }
 
     @Test
-    void deathCompletesExactlyAtTheEndOfTheAnimation() {
+    void holdingFireKeepsShootingUntilReleased() {
+        Player player = new Player(150, 200);
+        player.keyPressed(KeyEvent.VK_SPACE);
+        assertTrue(player.isShooting(), "pressing fire must shoot");
+        assertTrue(player.isShooting(), "holding fire must keep shooting");
+
+        player.keyReleased(KeyEvent.VK_SPACE);
+        assertFalse(player.isShooting(), "releasing fire must stop shooting");
+
+        player.keyPressed(KeyEvent.VK_SPACE);
+        player.die();
+        assertFalse(player.isShooting(), "death must cancel the held trigger");
+    }
+
+    @Test
+    void deathCompletesExactlyAtTheEndOfTheRamp() {
         Player player = new Player(150, 200);
         player.die();
 
-        // The ship is mid-death for the whole flash animation and only vanishes
-        // on the final frame; dying one frame early would be a visible regression.
-        for (int frame = 1; frame < 60; frame++) {
+        // The ship is mid-death for the whole 31-step color ramp and only
+        // vanishes on the final frame, as in the original ROM.
+        for (int frame = 1; frame < DEATH_FRAMES; frame++) {
             player.updateDeath();
-            assertFalse(player.isDead(), "ship still dying on frame " + frame + " of 60");
+            assertFalse(player.isDead(),
+                    "ship still dying on frame " + frame + " of " + DEATH_FRAMES);
         }
         player.updateDeath();
-        assertTrue(player.isDead(), "ship should be gone once the 60-frame death completes");
+        assertTrue(player.isDead(), "ship should be gone once the death ramp completes");
     }
 
     @Test
@@ -106,7 +120,7 @@ class PlayerTest {
     @Test
     void updateDeathDoesNothingForALivingShip() {
         Player player = new Player(150, 200);
-        for (int frame = 0; frame < 120; frame++) {
+        for (int frame = 0; frame < 200; frame++) {
             player.updateDeath();
         }
         assertFalse(player.isDead(), "a ship that never died must never be marked dead");

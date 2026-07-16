@@ -8,21 +8,24 @@ public class EnemyShot {
 
     private static final int WIDTH = 2;
     private static final int HEIGHT = 10;
-    // Measured from the original ROM: shots fall 2 scanlines per frame,
-    // which is 2.5px at this port's 1.25x vertical scale.
-    private static final double SPEED = 2.5;
     private static final Color COLOR = Color.BLUE;
 
     private final int x;
+    private final double speed;
     private double y;
 
-    public EnemyShot(int x, int y) {
+    /**
+     * speed comes from the formation: the ROM drops shots 2 scanlines per
+     * frame, 3 from the third loop of waves.
+     */
+    public EnemyShot(int x, double y, double speed) {
         this.x = x;
         this.y = y;
+        this.speed = speed;
     }
 
     public void update() {
-        y += SPEED;
+        y += speed;
     }
 
     public boolean isOffScreen(int boardHeight) {

@@ -11,262 +11,196 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * One attack wave of the original game's eight: hamburgers, cookies, bugs, radial tires,
- * diamonds, steam irons, bow ties and space dice. Waves 1/3/5/7 sweep horizontally across
- * the MegaSphere (wrapping at the edges); waves 2/4/6/8 descend from the top.
+ * One attack wave, reimplementing the movement, formation, and firing logic of
+ * the original ROM (see the MegaMania disassembly linked in the README).
+ *
+ * Even attack waves (hamburgers, bugs, diamonds, bow ties) are the horizontal
+ * ones: a 5/6/5 formation of two sprite clusters per row that sweeps rightward
+ * around the wrap ring while the whole formation bobs vertically in a triangle
+ * wave. Odd attack waves (cookies, tires, irons, dice) are the vertical ones:
+ * six row sections that scroll down one section at a time, the bottom row
+ * recycling to the top at a random column.
+ *
+ * All positions are kept in original hardware units (160 pixels wide, 144
+ * scanlines tall) and scaled 2x horizontally / 1.25x vertically for rendering.
  */
 public class EnemyFormation {
 
     public static final int WAVE_COUNT = 8;
 
-    private enum Pattern { SWEEP, ZIGZAG, SWEEP_BOB, STOP_GO, RAIN }
+    private static final int FIELD_W_HW = 160;
+    private static final int SCALE_X = 2;
+    private static final double SCALE_Y = 1.25;
 
-    private record WaveDef(String sprite, int points, int width, int height,
-                           Pattern pattern, double velX, double velY,
-                           int count, int shotInterval, int volleyHigh, int volleyLow,
-                           boolean shotHeightLimited, int flipInterval, boolean perEnemyDir,
-                           boolean bobOnBounds, int frameCount) {
+    private record WaveDef(int points, int width, int height, int frameCount) {
     }
 
-    // Geometry doubled from the 160px-wide original: 8px sprites -> 16, objects
-    // spaced 32 hardware pixels -> 64, rows moved one hardware pixel per frame -> 2.
     private static final int ENEMY_W = 16;
-    private static final int ENEMY_H = 10;
-    private static final double SWEEP_SPEED = 2;
+    private static final int H_ENEMY_H = 10;
 
+    // Heights are the sprites' visible scanline counts scaled by 1.25 (the
+    // ROM draws 8 lines for most objects, 9 for tires, 13 for dice).
     private static final WaveDef[] WAVES = {
-            // 1. Hamburgers: stream steadily across the screen.
-            new WaveDef("enemy01.png", 20, ENEMY_W, ENEMY_H, Pattern.SWEEP, SWEEP_SPEED, 0,
-                    15, 150, 3, 2, false, 0, false, false, 3),
-            // 2. Cookies: sweep back and forth, stepping down at each turn.
-            new WaveDef("enemy02.png", 30, ENEMY_W, ENEMY_H, Pattern.ZIGZAG, SWEEP_SPEED, 0,
-                    18, 100, 2, 1, true, 170, false, false, 3),
-            // 3. Bugs: like hamburgers.
-            new WaveDef("enemy03.png", 40, ENEMY_W, ENEMY_H, Pattern.SWEEP, SWEEP_SPEED, 0,
-                    15, 150, 3, 2, false, 0, false, false, 3),
-            // 4. Radial tires: cookies pattern, but rows alternate direction individually.
-            new WaveDef("enemy04.png", 50, ENEMY_W, ENEMY_H, Pattern.ZIGZAG, SWEEP_SPEED, 0,
-                    18, 100, 2, 1, true, 170, true, false, 3),
-            // 5. Diamonds: sweep across while slowly bobbing up and down, spinning.
-            new WaveDef("enemy05.png", 60, ENEMY_W, ENEMY_H, Pattern.SWEEP_BOB, SWEEP_SPEED, 0.05,
-                    15, 150, 3, 2, false, 0, false, true, 4),
-            // 6. Steam irons: descend in columns with erratic stop-and-go jinks.
-            new WaveDef("enemy06.png", 70, ENEMY_W, ENEMY_H, Pattern.STOP_GO, SWEEP_SPEED, 0.6,
-                    18, 100, 2, 1, true, 50, false, false, 3),
-            // 7. Bow ties: fast sweep with a pronounced vertical weave, spinning.
-            new WaveDef("enemy07.png", 80, ENEMY_W, ENEMY_H, Pattern.SWEEP_BOB, SWEEP_SPEED, 0.75,
-                    15, 150, 3, 2, false, 70, false, false, 4),
-            // 8. Space dice: rain straight down, tumbling through 16 phases.
-            new WaveDef("enemy08.png", 90, ENEMY_W, 12, Pattern.RAIN, 0, 1.25,
-                    18, 0, 0, 0, false, 0, false, false, 16),
+            new WaveDef(20, ENEMY_W, H_ENEMY_H, 3),   // hamburgers
+            new WaveDef(30, ENEMY_W, 10, 3),          // cookies
+            new WaveDef(40, ENEMY_W, H_ENEMY_H, 3),   // bugs
+            new WaveDef(50, ENEMY_W, 11, 3),          // radial tires
+            new WaveDef(60, ENEMY_W, H_ENEMY_H, 4),   // diamonds
+            new WaveDef(70, ENEMY_W, 10, 3),          // steam irons
+            new WaveDef(80, ENEMY_W, H_ENEMY_H, 4),   // bow ties
+            new WaveDef(90, ENEMY_W, 16, 16),         // space dice
     };
 
-    // Horizontal waves: three staggered rows of five, tiling the wrap ring exactly.
-    private static final int SWEEP_ROWS = 3;
-    private static final int SWEEP_PER_ROW = 5;
-    private static final int SWEEP_SPACING = 64;
-    private static final int SWEEP_STAGGER = SWEEP_SPACING / 2;
-    private static final int SWEEP_ROW_PITCH = 18;
-    // Spawn one full ring off the left edge so the wave streams in gradually.
-    private static final int SWEEP_ENTRY_SHIFT = SWEEP_PER_ROW * SWEEP_SPACING + SWEEP_SPACING;
-    // Multiple of the spacing so survivors re-enter on their original ring slots.
-    private static final int SWEEP_RETREAT_SHIFT = SWEEP_PER_ROW * SWEEP_SPACING + 2 * SWEEP_SPACING;
-    // Vertical waves: three columns 64 apart, rows 36 apart (29 scanlines originally).
-    private static final int COLUMN_SPACING = 64;
-    private static final int ROW_PITCH = 36;
-    // Vertical waves wrap back to the top after passing the blaster's row.
-    private static final int VERTICAL_WRAP_Y = 175;
-    private static final int STOP_GO_WRAP_Y = 165;
-    // Descending shots may only be fired from the upper part of the playfield.
-    private static final int SHOT_MAX_Y = 125;
-    private static final int VOLLEY_STAGGER_FRAMES = 18;
-    private static final int ZIGZAG_STEP_NOW = 22;
-    private static final int ZIGZAG_STEP_LATER = 14;
-    private static final int ZIGZAG_STEP_DELAY_FRAMES = 36;
-    // Second loop: hamburgers cruise, pause for a while, then dash before settling.
-    private static final int PHASE_CRUISE_FRAMES = 150;
-    private static final int PHASE_PAUSE_FRAMES = 90;
-    private static final int PHASE_DASH_FRAMES = 50;
-    private static final double DASH_SPEED = 5;
-    // Second loop: cookies and tires dive a full drop quickly instead of stepping.
-    private static final int DIVE_FRAMES = 18;
-    private static final double COOKIE_DIVE_SPEED = 4;
-    private static final double TIRE_DIVE_SPEED = 5;
-    // Second loop: dice drift sideways at ~45 degrees, rows alternating direction.
-    private static final double RAIN_DRIFT_SPEED = 1.25;
+    // Horizontal waves (measured off the real ROM in an emulator): the first
+    // row sits 5 scanlines below the formation top and rows are 14 apart.
+    private static final int H_ROW_OFFSET = 5;
+    private static final int H_ROW_PITCH = 14;
 
-    private static final class PendingShot {
-        final Enemy source;
-        int delay;
+    // Vertical waves: the ROM kernel spaces row sections 29 scanlines apart,
+    // and the top section grows one scanline per descent tick, pushing
+    // everything below it down — so the whole field slides smoothly and,
+    // with 29 ticks per scroll, the row shift is seamless. Sprites sit at
+    // the bottom of each section's graphic window, their bottom edge 4
+    // lines past the section origin. The bottom section lies below the
+    // kernel: the ROM never draws it, so its row is off screen (and safe
+    // from the blaster) until it recycles back to the top.
+    private static final int V_SECTION_HW = 29;
+    private static final int V_SPRITE_BOTTOM_HW = 4;
 
-        PendingShot(Enemy source, int delay) {
-            this.source = source;
-            this.delay = delay;
+    // TIA missile height: shots are drawn 8 scanlines tall, upward from the
+    // spawn offset, so their top lands H_MISSILE lines above it.
+    private static final int H_MISSILE = 8;
+
+    // ROM EnemyDecendingRate: how often the bob counter advances per even wave.
+    private static final int[] BOB_RATE_MASK = {0xFF, 0, 0x0F, 0, 0x07, 0, 0x00, 0};
+    // ROM InitEnemyMissileVertPosOffset, reordered top/middle/bottom row.
+    private static final int[] MISSILE_DROP = {27, 41, 50};
+    // ROM INIT_ENEMY_HORIZ_MOVE in both nybbles: alternating row directions.
+    private static final int INIT_MOVE_PATTERN = 0xAA;
+
+    /** One enemy slot of a horizontal wave's 5/6/5 formation. */
+    private static final class HSlot {
+        final int row;          // 0 = top .. 2 = bottom
+        final int side;         // 0 = left cluster, 1 = right cluster
+        final int offsetHw;     // offset from the formation base, hardware px
+        final int revealStep;   // ROM mask step (age/16) at which it appears
+        final Enemy enemy;
+        boolean alive = true;
+
+        HSlot(int row, int side, int offsetHw, int revealStep, Enemy enemy) {
+            this.row = row;
+            this.side = side;
+            this.offsetHw = offsetHw;
+            this.revealStep = revealStep;
+            this.enemy = enemy;
         }
     }
 
-    private final int waveIndex;
-    private final boolean secondLoop;
-    private final WaveDef def;
-    // Authentic ROM animation: one frame step every four game frames. Waves with
-    // four frames ping-pong 0-1-2-3-2-1 (the diamond and bow-tie spin); the dice
-    // cycle through all sixteen tumble phases.
-    private final BufferedImage[] frames;
-    private final int[] frameSequence;
-    private final int boardWidth;
-    private final List<Enemy> enemies = new ArrayList<>();
-    private final List<EnemyShot> shots = new ArrayList<>();
-    private final List<PendingShot> pendingShots = new ArrayList<>();
-    private final Random random = new Random();
-
-    private int shotCooldown;
-    private int dirX = 1;
-    private int dirY = 1;
-    private int flipCountdown;
-    private int zigzagStepCountdown = -1;
-    // Steam irons: horizontal and vertical motion pause and resume at random moments.
-    private boolean stoppedX;
-    private boolean stoppedY = true;
-    private int toggleXCountdown;
-    private int toggleYCountdown;
-    // Space dice: each wrapped triplet re-enters at a shared random column.
-    private double rainBaseX;
-    private int rainWrapCounter;
-    // Second-loop hamburgers: 0 = cruise, 1 = pause, 2 = dash.
-    private int sweepPhase;
-    private int sweepPhaseTimer = PHASE_CRUISE_FRAMES;
-    private int diveFramesLeft;
-    private int animTick;
-
-    public EnemyFormation(int waveIndex, int boardWidth) {
-        this(waveIndex, boardWidth, false);
+    /** One row section of a vertical wave; slot i sits at baseXHw + i * 32. */
+    private static final class VRow {
+        int baseXHw;
+        final Enemy[] slots = new Enemy[3];
     }
 
-    public EnemyFormation(int waveIndex, int boardWidth, boolean secondLoop) {
-        this.waveIndex = waveIndex % WAVE_COUNT;
-        this.secondLoop = secondLoop;
-        this.def = secondLoop ? secondLoopVariant(this.waveIndex) : WAVES[this.waveIndex];
+    private final int waveNumber;
+    private final int attackWave;
+    private final boolean horizontal;
+    private final WaveDef def;
+    private final BufferedImage[] frames;
+    private final int[] frameSequence;
+    private final List<EnemyShot> shots = new ArrayList<>();
+    private final List<Enemy> visible = new ArrayList<>();
+    // shotSlots[0]/[1] mirror the TIA's two missiles: horizontal waves may
+    // have one shot per cluster side in flight, vertical waves only slot 0.
+    private final EnemyShot[] shotSlots = new EnemyShot[2];
+
+    private int frame;
+
+    // Horizontal wave state.
+    private final List<HSlot> hslots = new ArrayList<>();
+    private int baseXHw;
+    private int age;                // reveal counter (ROM tmpEnemyVertPos)
+    private int bobCounter = 64;    // ROM enemyDecentRate
+
+    // Vertical wave state.
+    private final VRow[] rows = new VRow[6];   // 0 = bottom .. 5 = top
+    private int tick;                          // ROM oddAttackWaveVertPos
+    private int lowest = 6;                    // ROM lowestOddEnemySection
+    private int movePattern = INIT_MOVE_PATTERN;
+    private int randomSeed;                    // ROM 8-bit LFSR seed
+
+    /** @param waveNumber absolute wave count; the attack wave is waveNumber & 7. */
+    public EnemyFormation(int waveNumber, int boardWidth) {
+        this.waveNumber = Math.max(0, waveNumber);
+        this.attackWave = this.waveNumber & 7;
+        this.horizontal = (attackWave & 1) == 0;
+        this.def = WAVES[attackWave];
         this.frames = new BufferedImage[def.frameCount()];
         for (int i = 0; i < frames.length; i++) {
             this.frames[i] = Sprites.load(
-                    String.format("enemy%02d_%d.png", this.waveIndex + 1, i));
+                    String.format("enemy%02d_%d.png", attackWave + 1, i));
         }
         this.frameSequence = def.frameCount() == 4
                 ? new int[]{0, 1, 2, 3, 2, 1}
                 : identity(def.frameCount());
-        this.boardWidth = boardWidth;
-        this.flipCountdown = def.flipInterval();
-        this.toggleXCountdown = randomRange(30, 180);
-        this.toggleYCountdown = randomRange(120, 222);
-        this.rainBaseX = random.nextDouble() * boardWidth;
-        spawn();
+        this.randomSeed = 1 + new Random().nextInt(255);
+        if (horizontal) {
+            buildHorizontalSlots();
+        } else {
+            buildVerticalRows();
+        }
+        rebuildVisible();
     }
 
     /**
-     * From the second loop of eight waves on, the patterns change: hamburgers pause
-     * and dash, bugs undulate vertically, cookies and tires dive, and dice drift
-     * sideways. Steam irons are the one wave that never changes.
+     * ROM InitEvenWaveEnemyPatterns: a 5x3 grid, uniformly spaced 32 hardware
+     * pixels, with the whole middle row staggered +16 (the row spacing at
+     * line "adc EvenEnemyHorizSpacingValues,y" applies to both clusters).
+     * Each row is a left cluster (top and bottom rows lack the +0 slot) and a
+     * right cluster at +96 whose third copy wraps around the 160px ring: on
+     * the outer rows it lands on B+0, completing the even grid, and on the
+     * middle row it lands exactly on the left cluster's first slot — the ROM
+     * tracks it as a 16th pattern bit, but it pops in at the same reveal step,
+     * dies to the same shot, and scores once, so it is one enemy here. The
+     * reveal steps reproduce EnemyNUSIZIndexMaskingValues: one slot pops in
+     * every 16 frames, broadly right cluster first.
      */
-    private static WaveDef secondLoopVariant(int waveIndex) {
-        WaveDef base = WAVES[waveIndex];
-        if (waveIndex == 2) {
-            // Bugs gain a vertical undulation like the bow ties'.
-            return new WaveDef(base.sprite(), base.points(), base.width(), base.height(),
-                    Pattern.SWEEP_BOB, base.velX(), 0.3,
-                    base.count(), base.shotInterval(), base.volleyHigh(), base.volleyLow(),
-                    base.shotHeightLimited(), 70, base.perEnemyDir(), false, base.frameCount());
-        }
-        return base;
-    }
-
-    public int getPoints() {
-        return def.points();
-    }
-
-    private void spawn() {
-        switch (def.pattern()) {
-            case SWEEP, SWEEP_BOB -> spawnSweepRows();
-            case ZIGZAG -> spawnZigzagRows();
-            case STOP_GO -> spawnColumns(96, -75);
-            case RAIN -> spawnRain();
-        }
-    }
-
-    /**
-     * Three uniform rows of five, evenly spaced so they tile the wrap ring exactly,
-     * with alternate rows offset by half a spacing, as in the original.
-     */
-    private void spawnSweepRows() {
-        int baseY = def.pattern() == Pattern.SWEEP_BOB
-                ? (def.bobOnBounds() ? 27 : 22)
-                : 7;
-        for (int row = 0; row < SWEEP_ROWS; row++) {
-            double y = baseY + row * SWEEP_ROW_PITCH;
-            int stagger = (row % 2 == 1) ? SWEEP_STAGGER : 0;
-            for (int col = 0; col < SWEEP_PER_ROW; col++) {
-                add(col * SWEEP_SPACING + stagger - SWEEP_ENTRY_SHIFT, y);
+    private void buildHorizontalSlots() {
+        int[][] leftSteps = {{-1, 8, 6}, {9, 7, 5}, {-1, 8, 6}};
+        int[][] rightSteps = {{4, 2, 0}, {3, 1, -1}, {4, 2, 0}};
+        for (int row = 0; row < 3; row++) {
+            int stagger = row == 1 ? 16 : 0;
+            for (int slot = 0; slot < 3; slot++) {
+                if (leftSteps[row][slot] >= 0) {
+                    hslots.add(new HSlot(row, 0, stagger + slot * 32, leftSteps[row][slot],
+                            new Enemy(def.width(), def.height(), 0, 0)));
+                }
+                if (rightSteps[row][slot] >= 0) {
+                    hslots.add(new HSlot(row, 1, stagger + 96 + slot * 32,
+                            rightSteps[row][slot],
+                            new Enemy(def.width(), def.height(), 0, 0)));
+                }
             }
         }
     }
 
-    /** Rows of three descending from above the screen, each row shifted at random. */
-    private void spawnZigzagRows() {
-        double x = 40;
-        double y = -15;
-        int rowDir = 1;
-        int lastBranch = -1;
-        while (enemies.size() < def.count()) {
-            double left = wrapX(x);
-            double middle = wrapX(x + COLUMN_SPACING);
-            double right = wrapX(x + 2 * COLUMN_SPACING);
-            addWithDir(left, y, rowDir);
-            addWithDir(middle, y, rowDir);
-            addWithDir(right, y, rowDir);
-            rowDir = -rowDir;
-
-            int branch;
-            do {
-                branch = random.nextInt(3);
-            } while (branch == lastBranch);
-            lastBranch = branch;
-            x = (branch == 0 ? left : branch == 1 ? middle : right) + 25;
-            y -= ROW_PITCH;
+    /**
+     * Six rows of three (ROM pattern %0111), all hidden until they scroll in
+     * from the top. From the third loop, cookies — and the dice of wave 24 —
+     * shrink to rows of two wide-spaced enemies (pattern %0101).
+     */
+    private void buildVerticalRows() {
+        boolean twoWide = waveNumber >= 16 && (waveNumber == 23 || attackWave < 3);
+        for (int section = 0; section < rows.length; section++) {
+            VRow row = new VRow();
+            for (int i = 0; i < 3; i++) {
+                if (twoWide && i == 1) {
+                    continue;
+                }
+                row.slots[i] = new Enemy(def.width(), def.height(), 0, 0);
+            }
+            rows[section] = row;
         }
-    }
-
-    /** Straight columns of three stacked above the screen. */
-    private void spawnColumns(double startX, double startY) {
-        double y = startY;
-        while (enemies.size() < def.count()) {
-            add(startX, y);
-            add(startX + COLUMN_SPACING, y);
-            add(startX + 2 * COLUMN_SPACING, y);
-            y -= ROW_PITCH;
-        }
-    }
-
-    /** Dice rows at a random column base, falling straight down. */
-    private void spawnRain() {
-        double y = -75;
-        int rowDir = 1;
-        while (enemies.size() < def.count()) {
-            double base = random.nextDouble() * boardWidth;
-            addWithDir(base, y, rowDir);
-            addWithDir(base + COLUMN_SPACING, y, rowDir);
-            addWithDir(base + 2 * COLUMN_SPACING, y, rowDir);
-            y -= ROW_PITCH;
-            rowDir = -rowDir;
-        }
-    }
-
-    private void add(double x, double y) {
-        enemies.add(new Enemy(def.width(), def.height(), x, y));
-    }
-
-    private void addWithDir(double x, double y, int dir) {
-        Enemy enemy = new Enemy(def.width(), def.height(), x, y);
-        enemy.setDir(dir);
-        enemies.add(enemy);
     }
 
     private static int[] identity(int n) {
@@ -277,208 +211,232 @@ public class EnemyFormation {
         return seq;
     }
 
-    private double wrapX(double x) {
-        return x >= boardWidth ? x - boardWidth : x;
+    /** ROM NextRandom: an 8-bit LFSR. */
+    private int nextRandom() {
+        int t = ((randomSeed << 3) & 0xFF) ^ randomSeed;
+        randomSeed = ((randomSeed << 1) | ((t >> 7) & 1)) & 0xFF;
+        return randomSeed;
+    }
+
+    public int getPoints() {
+        return def.points();
     }
 
     public void update(int boardWidth, int boardHeight) {
-        if (enemies.isEmpty()) {
+        frame++;
+        freeShotSlots();
+        if (horizontal) {
+            updateHorizontal();
+            fireHorizontal();
+        } else {
+            updateVertical();
+            fireVertical();
+        }
+        moveShots(boardHeight);
+        rebuildVisible();
+    }
+
+    // ------------------------------------------------------------------
+    // Horizontal (even) waves
+    // ------------------------------------------------------------------
+
+    private void updateHorizontal() {
+        if (age < 160) {
+            age++;
+        }
+        if ((frame & BOB_RATE_MASK[attackWave]) == 0) {
+            bobCounter = (bobCounter + 1) & 0xFF;
+        }
+        // One step per frame on the first loop; afterwards the 256-frame cycle
+        // is 80 frames paused, 48 at double speed, 128 at normal speed.
+        int steps = 1;
+        if (waveNumber >= 7) {
+            int f = frame & 0xFF;
+            steps = f < 80 ? 0 : (f < 128 ? 2 : 1);
+        }
+        baseXHw = (baseXHw + steps) % FIELD_W_HW;
+    }
+
+    /**
+     * ROM enemyDecentRate: the masked counter folds into a triangle wave, so
+     * the formation descends up to 63 scanlines and rises back.
+     */
+    private int bobDescentHw() {
+        int v = bobCounter & 0x7E;
+        if (v >= 64) {
+            v ^= 0x7F;
+        }
+        return 63 - v;
+    }
+
+    private void fireHorizontal() {
+        // ROM gates firing on enemyVertPos >= 85: hold fire at the deepest dip.
+        if (bobDescentHw() > 58) {
             return;
         }
-        animTick++;
-        switch (def.pattern()) {
-            case SWEEP -> updateSweep();
-            case SWEEP_BOB -> updateSweepBob();
-            case ZIGZAG -> updateZigzag();
-            case STOP_GO -> updateStopGo();
-            case RAIN -> updateRain();
+        int side = (frame >> 4) & 1;
+        if (shotSlots[side] != null) {
+            return;
         }
-        updateShooting(boardHeight);
-    }
-
-    private void updateSweep() {
-        double speed = sweepSpeed();
-        for (Enemy enemy : enemies) {
-            enemy.moveBy(speed, 0);
-            if (enemy.getX() >= boardWidth) {
-                // Ring wrap keeps the original's even spacing intact.
-                enemy.moveBy(-boardWidth, 0);
-            }
-        }
-    }
-
-    /** Second-loop hamburgers periodically pause, then dash before settling down. */
-    private double sweepSpeed() {
-        if (!secondLoop || waveIndex != 0) {
-            return def.velX();
-        }
-        if (--sweepPhaseTimer <= 0) {
-            sweepPhase = (sweepPhase + 1) % 3;
-            sweepPhaseTimer = switch (sweepPhase) {
-                case 1 -> PHASE_PAUSE_FRAMES;
-                case 2 -> PHASE_DASH_FRAMES;
-                default -> PHASE_CRUISE_FRAMES;
-            };
-        }
-        return switch (sweepPhase) {
-            case 1 -> 0;
-            case 2 -> DASH_SPEED;
-            default -> def.velX();
-        };
-    }
-
-    private void updateSweepBob() {
-        if (!def.bobOnBounds()) {
-            flipCountdown--;
-            if (flipCountdown <= 0) {
-                dirY = -dirY;
-                flipCountdown = def.flipInterval();
-            }
-        }
-        boolean bounce = false;
-        for (Enemy enemy : enemies) {
-            enemy.moveBy(def.velX(), def.velY() * dirY);
-            if (def.bobOnBounds() && (enemy.getY() >= SHOT_MAX_Y || enemy.getY() <= 15)) {
-                bounce = true;
-            }
-            if (enemy.getX() >= boardWidth) {
-                enemy.moveBy(-boardWidth, 0);
-            }
-        }
-        if (bounce) {
-            dirY = -dirY;
-        }
-    }
-
-    private void updateZigzag() {
-        flipCountdown--;
-        if (flipCountdown <= 0) {
-            flipCountdown = def.flipInterval();
-            dirX = -dirX;
-            if (secondLoop) {
-                // Cookies and tires dive a full drop quickly instead of stepping.
-                diveFramesLeft = DIVE_FRAMES;
-            } else {
-                for (Enemy enemy : enemies) {
-                    enemy.moveBy(0, ZIGZAG_STEP_NOW);
-                }
-                zigzagStepCountdown = ZIGZAG_STEP_DELAY_FRAMES;
-            }
-            if (def.perEnemyDir()) {
-                for (Enemy enemy : enemies) {
-                    enemy.flipDir();
-                }
-            }
-        }
-        if (zigzagStepCountdown >= 0 && --zigzagStepCountdown < 0) {
-            for (Enemy enemy : enemies) {
-                enemy.moveBy(0, ZIGZAG_STEP_LATER);
-            }
-        }
-        if (diveFramesLeft > 0) {
-            diveFramesLeft--;
-            double diveSpeed = waveIndex == 3 ? TIRE_DIVE_SPEED : COOKIE_DIVE_SPEED;
-            for (Enemy enemy : enemies) {
-                enemy.moveBy(0, diveSpeed);
-            }
-        }
-        for (Enemy enemy : enemies) {
-            int dir = def.perEnemyDir() ? enemy.getDir() : dirX;
-            enemy.moveBy(def.velX() * dir, 0);
-            if (enemy.getX() >= boardWidth) {
-                enemy.setX(-def.width());
-            } else if (enemy.getX() + def.width() <= 0) {
-                enemy.setX(boardWidth);
-            }
-            if (enemy.getY() >= VERTICAL_WRAP_Y) {
-                enemy.setY(-40);
-            }
-        }
-    }
-
-    private void updateStopGo() {
-        if (--toggleYCountdown <= 0) {
-            stoppedY = !stoppedY;
-            toggleYCountdown = randomRange(120, 222);
-        }
-        if (--toggleXCountdown <= 0) {
-            stoppedX = !stoppedX;
-            toggleXCountdown = randomRange(30, 180);
-        }
-        if (!stoppedX) {
-            flipCountdown--;
-            if (flipCountdown <= 0) {
-                dirX = -dirX;
-                flipCountdown = def.flipInterval();
-            }
-        }
-        for (Enemy enemy : enemies) {
-            if (!stoppedX) {
-                enemy.moveBy(def.velX() * dirX, 0);
-            }
-            if (!stoppedY) {
-                enemy.moveBy(0, def.velY());
-            }
-            if (enemy.getY() >= STOP_GO_WRAP_Y) {
-                enemy.setY(-75);
-            }
-        }
-    }
-
-    private void updateRain() {
-        for (Enemy enemy : enemies) {
-            // Second-loop dice fall at ~45 degrees, rows alternating left and right.
-            double drift = secondLoop ? RAIN_DRIFT_SPEED * enemy.getDir() : 0;
-            enemy.moveBy(drift, def.velY());
-            if (enemy.getX() >= boardWidth) {
-                enemy.moveBy(-boardWidth - ENEMY_W, 0);
-            } else if (enemy.getX() + ENEMY_W <= 0) {
-                enemy.moveBy(boardWidth + ENEMY_W, 0);
-            }
-            if (enemy.getY() >= VERTICAL_WRAP_Y) {
-                enemy.setY(-65);
-                enemy.setX(wrapX(rainBaseX + rainWrapCounter * COLUMN_SPACING));
-                rainWrapCounter++;
-                if (rainWrapCounter == 3) {
-                    rainWrapCounter = 0;
-                    rainBaseX = random.nextDouble() * boardWidth;
-                }
-            }
-        }
-    }
-
-    private void updateShooting(int boardHeight) {
-        if (def.shotInterval() > 0) {
-            if (shotCooldown > 0) {
-                shotCooldown--;
-            } else {
-                int amount = enemies.size() >= 4 ? def.volleyHigh() : def.volleyLow();
-                for (int i = 1; i <= amount; i++) {
-                    Enemy source = enemies.get(random.nextInt(enemies.size()));
-                    pendingShots.add(new PendingShot(source, i * VOLLEY_STAGGER_FRAMES));
-                }
-                shotCooldown = def.shotInterval();
-            }
-        }
-
-        Iterator<PendingShot> pending = pendingShots.iterator();
-        while (pending.hasNext()) {
-            PendingShot shot = pending.next();
-            if (--shot.delay > 0) {
+        for (int row = 2; row >= 0; row--) {   // bottom row gets first claim
+            int offset = leftmostRevealedOffset(side, row);
+            if (offset < 0) {
                 continue;
             }
-            pending.remove();
-            if (!enemies.contains(shot.source)) {
-                continue;
-            }
-            double y = shot.source.getY();
-            if (def.shotHeightLimited() && (y < 0 || y > SHOT_MAX_Y)) {
-                continue;
-            }
-            shots.add(new EnemyShot((int) Math.round(shot.source.getX()) + def.width() / 2,
-                    (int) Math.round(y) + 10));
+            int xHw = (baseXHw + offset + 5) % FIELD_W_HW;
+            double y = (bobDescentHw() + MISSILE_DROP[row] - H_MISSILE) * SCALE_Y;
+            EnemyShot shot = new EnemyShot(xHw * SCALE_X, y, shotSpeed());
+            shots.add(shot);
+            shotSlots[side] = shot;
+            return;
         }
+    }
 
+    private int leftmostRevealedOffset(int side, int row) {
+        int revealIndex = Math.min(9, age / 16);
+        int best = -1;
+        for (HSlot slot : hslots) {
+            if (slot.alive && slot.side == side && slot.row == row
+                    && slot.revealStep <= revealIndex
+                    && (best < 0 || slot.offsetHw < best)) {
+                best = slot.offsetHw;
+            }
+        }
+        return best;
+    }
+
+    // ------------------------------------------------------------------
+    // Vertical (odd) waves
+    // ------------------------------------------------------------------
+
+    private void updateVertical() {
+        if (attackWave == 5) {
+            updateIrons();
+            return;
+        }
+        // Descent timer: 1 tick per 4 frames on the first loop, every frame
+        // from wave 8, and twice per frame on wave 8's dice and the third loop.
+        int iterations = ((waveNumber & 0x0F) == 7 || waveNumber >= 16) ? 2 : 1;
+        for (int i = 0; i < iterations; i++) {
+            if (waveNumber >= 7 || (frame & 0x50) == 0) {
+                tick++;
+            }
+            if (tick >= 29) {
+                scrollRowsDown();
+            }
+        }
+        if (attackWave == 1) {
+            // Cookies sweep in unison, turning on frame-counter bit 7.
+            int dx = (frame & 0x80) != 0 ? 1 : -1;
+            for (VRow row : rows) {
+                row.baseXHw = wrapHw(row.baseXHw + dx);
+            }
+        } else if (attackWave == 3 || (attackWave == 7 && waveNumber >= 8)) {
+            // Tires always, and dice from the second loop, move one pixel per
+            // frame with per-row directions from the rotating pattern byte.
+            moveRowsByPattern();
+        }
+    }
+
+    /**
+     * Steam irons: direction and descent both come from the ROM's random seed,
+     * refreshed every 32 frames — jittering within the x 26..64 band and
+     * descending in half-second bursts.
+     */
+    private void updateIrons() {
+        if ((frame & 0x1F) == 0) {
+            nextRandom();
+        }
+        if ((frame & 1) == 0 && (randomSeed & 7) >= 4) {
+            tick++;
+        }
+        if (tick >= 29) {
+            scrollRowsDown();
+        }
+        int dir = (randomSeed & 0x80) != 0 ? -1 : 1;
+        for (VRow row : rows) {
+            int x = row.baseXHw;
+            if (((x - 26) & 0xFF) >= 39) {
+                x = 32;   // ROM re-centers strays into the band
+            }
+            x += dir;
+            row.baseXHw = Math.max(26, Math.min(64, x));
+        }
+    }
+
+    /**
+     * All rows shift down one section; the bottom row's survivors recycle to
+     * the top — at a new random column, except on the iron wave.
+     */
+    private void scrollRowsDown() {
+        VRow bottom = rows[0];
+        System.arraycopy(rows, 1, rows, 0, rows.length - 1);
+        rows[rows.length - 1] = bottom;
+        if (lowest > 0) {
+            lowest--;
+        }
+        if (attackWave != 5) {
+            bottom.baseXHw = (nextRandom() & 0x7F) + 16;
+        }
+        movePattern = ((movePattern >> 1) | ((movePattern & 1) << 7)) & 0xFF;
+        tick = 0;
+    }
+
+    private void moveRowsByPattern() {
+        for (int section = 5; section >= 0; section--) {
+            boolean left = (movePattern & (1 << (section + 2))) != 0;
+            rows[section].baseXHw = wrapHw(rows[section].baseXHw + (left ? -1 : 1));
+        }
+    }
+
+    private void fireVertical() {
+        if (attackWave == 7) {
+            return;   // space dice never fire
+        }
+        if (lowest >= 5) {
+            return;   // the firing row (section 4) has not scrolled in yet
+        }
+        if (shotSlots[0] != null) {
+            return;
+        }
+        VRow row = rows[4];
+        int offset = -1;
+        for (int i = 0; i < row.slots.length; i++) {
+            if (row.slots[i] != null) {
+                offset = i * 32;
+                break;
+            }
+        }
+        if (offset < 0) {
+            return;
+        }
+        int xHw = (row.baseXHw + offset + 5) % FIELD_W_HW;
+        // The ROM spawns the missile level with the firing row's sprite, so
+        // the shot emerges from the enemy itself (verified in an emulator).
+        double y = (25 + tick) * SCALE_Y;
+        EnemyShot shot = new EnemyShot(xHw * SCALE_X, y, shotSpeed());
+        shots.add(shot);
+        shotSlots[0] = shot;
+    }
+
+    // ------------------------------------------------------------------
+    // Shots and bookkeeping
+    // ------------------------------------------------------------------
+
+    /** Shots fall 2 scanlines per frame, 3 from the third loop. */
+    private double shotSpeed() {
+        return (waveNumber >= 16 ? 3 : 2) * SCALE_Y;
+    }
+
+    private void freeShotSlots() {
+        for (int i = 0; i < shotSlots.length; i++) {
+            if (shotSlots[i] != null && !shots.contains(shotSlots[i])) {
+                shotSlots[i] = null;
+            }
+        }
+    }
+
+    private void moveShots(int boardHeight) {
         Iterator<EnemyShot> it = shots.iterator();
         while (it.hasNext()) {
             EnemyShot shot = it.next();
@@ -489,63 +447,167 @@ public class EnemyFormation {
         }
     }
 
-    /** After the blaster is destroyed, survivors back away and re-enter gradually. */
-    public void retreat() {
-        shots.clear();
-        pendingShots.clear();
-        if (enemies.isEmpty()) {
-            return;
+    private static int wrapHw(int x) {
+        if (x < 0) {
+            return FIELD_W_HW - 1;
         }
-        if (def.pattern() == Pattern.SWEEP || def.pattern() == Pattern.SWEEP_BOB) {
-            for (Enemy enemy : enemies) {
-                enemy.moveBy(-SWEEP_RETREAT_SHIFT, 0);
+        if (x >= FIELD_W_HW) {
+            return 0;
+        }
+        return x;
+    }
+
+    private void rebuildVisible() {
+        visible.clear();
+        if (horizontal) {
+            int revealIndex = Math.min(9, age / 16);
+            for (HSlot slot : hslots) {
+                if (!slot.alive || slot.revealStep > revealIndex) {
+                    continue;
+                }
+                slot.enemy.setX(((baseXHw + slot.offsetHw) % FIELD_W_HW) * SCALE_X);
+                slot.enemy.setY((bobDescentHw() + H_ROW_OFFSET
+                        + slot.row * H_ROW_PITCH) * SCALE_Y);
+                visible.add(slot.enemy);
             }
         } else {
-            double maxY = enemies.get(0).getY();
-            for (Enemy enemy : enemies) {
-                maxY = Math.max(maxY, enemy.getY());
-            }
-            double shift = maxY <= 50 ? 70 : maxY * 1.25;
-            for (Enemy enemy : enemies) {
-                enemy.moveBy(0, -shift);
+            // Section 0 sits below the ROM's kernel: it is never drawn, so
+            // its row stays hidden until it recycles back to the top.
+            for (int section = 5; section >= 1; section--) {
+                if (section < lowest) {
+                    continue;
+                }
+                // Every row moves down one scanline per descent tick; the top
+                // row slides in from behind the top edge.
+                double y = (tick + V_SPRITE_BOTTOM_HW + (5 - section) * V_SECTION_HW)
+                        * SCALE_Y - def.height();
+                VRow row = rows[section];
+                for (int i = 0; i < row.slots.length; i++) {
+                    Enemy enemy = row.slots[i];
+                    if (enemy == null) {
+                        continue;
+                    }
+                    enemy.setX(((row.baseXHw + i * 32) % FIELD_W_HW) * SCALE_X);
+                    enemy.setY(y);
+                    visible.add(enemy);
+                }
             }
         }
     }
 
-    private int randomRange(int minInclusive, int maxInclusive) {
-        return minInclusive + random.nextInt(maxInclusive - minInclusive + 1);
+    /**
+     * After the blaster is destroyed the survivors reset to their entry state:
+     * horizontal waves re-reveal from the formation origin, vertical waves
+     * scroll back in from the top, one row at a time.
+     */
+    public void retreat() {
+        clearShots();
+        if (horizontal) {
+            baseXHw = 0;
+            age = 0;
+            bobCounter = 64;
+        } else {
+            lowest = 6;
+            tick = 0;
+            for (VRow row : rows) {
+                row.baseXHw = 0;
+            }
+        }
+        rebuildVisible();
+    }
+
+    public void clearShots() {
+        shots.clear();
+        for (int i = 0; i < shotSlots.length; i++) {
+            shotSlots[i] = null;
+        }
     }
 
     public void render(Graphics2D g) {
-        BufferedImage frame =
-                frames[frameSequence[(animTick / 4) % frameSequence.length]];
-        for (Enemy enemy : enemies) {
-            enemy.render(g, frame);
+        BufferedImage frameImage =
+                frames[frameSequence[(frame / 4) % frameSequence.length]];
+        for (Enemy enemy : visible) {
+            enemy.render(g, frameImage);
         }
         for (EnemyShot shot : shots) {
             shot.render(g);
         }
     }
 
+    /** Enemies currently on screen (hidden ones can be neither shot nor rammed). */
     public List<Enemy> getEnemies() {
-        return Collections.unmodifiableList(enemies);
+        return Collections.unmodifiableList(visible);
     }
 
     public List<EnemyShot> getShots() {
         return Collections.unmodifiableList(shots);
     }
 
+    public int aliveCount() {
+        int count = 0;
+        if (horizontal) {
+            for (HSlot slot : hslots) {
+                if (slot.alive) {
+                    count++;
+                }
+            }
+        } else {
+            for (VRow row : rows) {
+                for (Enemy enemy : row.slots) {
+                    if (enemy != null) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    public boolean isCleared() {
+        return aliveCount() == 0;
+    }
+
     public void clear() {
-        enemies.clear();
-        shots.clear();
-        pendingShots.clear();
+        for (HSlot slot : hslots) {
+            slot.alive = false;
+        }
+        for (VRow row : rows) {
+            if (row == null) {
+                continue;
+            }
+            for (int i = 0; i < row.slots.length; i++) {
+                row.slots[i] = null;
+            }
+        }
+        clearShots();
+        visible.clear();
     }
 
     public void remove(Enemy enemy) {
-        enemies.remove(enemy);
+        if (horizontal) {
+            for (HSlot slot : hslots) {
+                if (slot.enemy == enemy) {
+                    slot.alive = false;
+                }
+            }
+        } else {
+            for (VRow row : rows) {
+                for (int i = 0; i < row.slots.length; i++) {
+                    if (row.slots[i] == enemy) {
+                        row.slots[i] = null;
+                    }
+                }
+            }
+        }
+        visible.remove(enemy);
     }
 
     public void removeShot(EnemyShot shot) {
         shots.remove(shot);
+        for (int i = 0; i < shotSlots.length; i++) {
+            if (shotSlots[i] == shot) {
+                shotSlots[i] = null;
+            }
+        }
     }
 }

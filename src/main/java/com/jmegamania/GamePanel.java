@@ -46,6 +46,8 @@ public class GamePanel extends JPanel implements Runnable {
     private static final Color MARQUEE_YELLOW = new Color(212, 175, 40);
     // Bottom strip below the gray band, holding the branding line like the original.
     private static final int MARQUEE_HEIGHT = 15;
+    // The TIA's per-scanline HMOVE blank: 8 hardware pixels, doubled here.
+    private static final int HMOVE_BLANK_WIDTH = 16;
     // At game over the marquee alternates texts every 256 frames (the original
     // toggles on its frame counter overflowing, about every 4.3 seconds).
     private static final int MARQUEE_SWAP_FRAMES = 256;
@@ -62,10 +64,11 @@ public class GamePanel extends JPanel implements Runnable {
     private static final int ENERGY_BAR_CHUNKS = 20;
     private static final int BONUS_DRAIN_FRAMES = 2;
 
-    // Dev aids: -Djmegamania.wave=N starts at wave N (0-7); -Djmegamania.lives=N
-    // overrides the starting reserve count.
+    // Dev aids: -Djmegamania.wave=N starts at absolute wave N (0-7 = first
+    // loop; 8+ reaches the later loops); -Djmegamania.lives=N overrides the
+    // starting reserve count.
     private static final int START_WAVE =
-            Math.floorMod(Integer.getInteger("jmegamania.wave", 0), EnemyFormation.WAVE_COUNT);
+            Math.max(0, Integer.getInteger("jmegamania.wave", 0));
     private static final int START_LIVES =
             Math.min(MAX_LIVES, Math.max(0, Integer.getInteger("jmegamania.lives", STARTING_LIVES)));
 
@@ -79,9 +82,10 @@ public class GamePanel extends JPanel implements Runnable {
     private final Sound sfxEmptying = Sound.load("emptying.wav");
     private int score;
     private int lives = START_LIVES;
-    private int currentWave;
-    // From the second loop of eight waves onward, every attacker is worth 90 points.
-    private boolean secondLoop;
+    // Absolute wave count; the attack wave cycles through waveNumber & 7.
+    private int waveNumber = START_WAVE;
+    // Wave-clear bonus pays the cleared wave's point value per energy unit.
+    private int bonusValue;
     private int nextExtraShipScore = EXTRA_SHIP_SCORE;
     private int energy;
     private long frame;
@@ -128,8 +132,8 @@ public class GamePanel extends JPanel implements Runnable {
     private void restart() {
         score = 0;
         lives = START_LIVES;
-        currentWave = START_WAVE;
-        secondLoop = false;
+        waveNumber = START_WAVE;
+        bonusValue = 0;
         nextExtraShipScore = EXTRA_SHIP_SCORE;
         energy = 0;
         emptying = false;
@@ -138,12 +142,13 @@ public class GamePanel extends JPanel implements Runnable {
         sfxEmptying.stop();
         bullets.clear();
         player.resetPosition(PLAYER_START_X);
-        enemyFormation = new EnemyFormation(currentWave, WIDTH);
+        enemyFormation = new EnemyFormation(waveNumber, WIDTH);
         beginFuelling();
     }
 
-    private int waveValue() {
-        return secondLoop ? 90 : enemyFormation.getPoints();
+    /** From the second loop of eight waves onward, every object is worth 90 points. */
+    private int killValue() {
+        return waveNumber >= EnemyFormation.WAVE_COUNT ? 90 : enemyFormation.getPoints();
     }
 
     public void start() {
@@ -218,16 +223,11 @@ public class GamePanel extends JPanel implements Runnable {
             if (energy > 0) {
                 if (frame % BONUS_DRAIN_FRAMES == 0) {
                     energy--;
-                    score += waveValue();
+                    score += bonusValue;
                 }
             } else {
                 emptying = false;
                 sfxEmptying.stop();
-                currentWave = (currentWave + 1) % EnemyFormation.WAVE_COUNT;
-                if (currentWave == 0) {
-                    secondLoop = true;
-                }
-                enemyFormation = new EnemyFormation(currentWave, WIDTH, secondLoop);
                 beginFuelling();
             }
             return;
@@ -245,6 +245,8 @@ public class GamePanel extends JPanel implements Runnable {
         player.update(WIDTH);
         enemyFormation.update(WIDTH, PLAYFIELD_HEIGHT);
 
+        // Game 1's guided missiles refire as long as the button is held: the
+        // ROM resets its fire debounce every frame in the guided variants.
         if (player.isShooting() && bullets.isEmpty()) {
             bullets.add(new Bullet(player.getMuzzleX(), player.getMuzzleY()));
             sfxShoot.play();
@@ -263,7 +265,7 @@ public class GamePanel extends JPanel implements Runnable {
                 if (bullet.getBounds().intersects(enemy.getBounds())) {
                     enemyFormation.remove(enemy);
                     it.remove();
-                    score += waveValue();
+                    score += killValue();
                     sfxEnemyHit.play();
                     break;
                 }
@@ -285,10 +287,15 @@ public class GamePanel extends JPanel implements Runnable {
             }
         }
 
-        if (enemyFormation.getEnemies().isEmpty()) {
-            emptying = true;
-            enemyFormation.clear();
+        if (enemyFormation.isCleared()) {
+            // As in the ROM, the next wave spawns immediately but sits frozen
+            // at pixel 0 — hidden under the HMOVE blank bar — while the bonus
+            // counts down and the energy refills.
+            bonusValue = killValue();
+            waveNumber++;
+            enemyFormation = new EnemyFormation(waveNumber, WIDTH);
             bullets.clear();
+            emptying = true;
             sfxEmptying.loop();
             return;
         }
@@ -300,6 +307,8 @@ public class GamePanel extends JPanel implements Runnable {
             dying = true;
             player.die();
             bullets.clear();
+            // The ROM wipes enemy missiles the moment the death scene starts.
+            enemyFormation.clearShots();
         }
     }
 
@@ -337,6 +346,14 @@ public class GamePanel extends JPanel implements Runnable {
             bullet.render(g2);
         }
         enemyFormation.render(g2);
+
+        // The Atari kernel strobes HMOVE on every scanline, blanking the
+        // leftmost 8 hardware pixels of the playfield (the black comb bar of
+        // Activision games). The ROM stages the next wave's first objects at
+        // pixel 0, hidden under this bar, while the bonus counts down and the
+        // energy refills; they then walk out from behind it as play resumes.
+        g2.setColor(Color.BLACK);
+        g2.fillRect(0, 0, HMOVE_BLANK_WIDTH, PLAYFIELD_HEIGHT);
 
         renderHud(g2);
 
@@ -383,13 +400,14 @@ public class GamePanel extends JPanel implements Runnable {
     }
 
     /**
-     * Branding line on the black strip under the gray band, as in the original:
-     * ACTIVISION while playing, alternating with the copyright line at game over.
+     * Branding line on the black strip under the gray band, styled after the
+     * original's marquee (which showed ACTIVISION while playing, alternating
+     * with the copyright line at game over).
      */
     private void renderMarquee(Graphics2D g2) {
         String text = ended && (frame / MARQUEE_SWAP_FRAMES) % 2 == 1
                 ? "COPYRIGHT 1982"
-                : "ACTIVISION";
+                : "JMEGAMANIA";
         g2.setFont(new Font(Font.MONOSPACED, Font.BOLD, 10));
         g2.setColor(MARQUEE_YELLOW);
         FontMetrics metrics = g2.getFontMetrics();
